@@ -1,0 +1,303 @@
+package cc.linklab.android
+
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import androidx.annotation.NonNull
+import org.json.JSONObject
+import java.io.IOException
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import androidx.core.net.toUri
+
+/**
+ * LinkLab is a library for handling dynamic links for Android applications.
+ * It can retrieve a full link from a short link, either automatically from an Intent
+ * or programmatically by providing a short link.
+ */
+class LinkLab private constructor(private val applicationContext: Context) {
+    private val httpClient = OkHttpClient()
+    private val backgroundExecutor: Executor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val listeners = mutableListOf<LinkLabListener>()
+
+    private var apiKey: String? = null
+
+    /**
+     * Interface for callbacks when a dynamic link is processed.
+     */
+    interface LinkLabListener {
+        /**
+         * Called when a dynamic link has been successfully processed.
+         *
+         * @param fullLink The resolved full link
+         * @param data Additional data about the link
+         */
+        fun onDynamicLinkRetrieved(fullLink: Uri, data: LinkData)
+
+        /**
+         * Called when there was an error processing a dynamic link.
+         *
+         * @param exception The exception that occurred
+         */
+        fun onError(exception: Exception)
+    }
+
+    /**
+     * Container for link data.
+     */
+    data class LinkData(
+        val id: String,
+        val fullLink: String,
+        val createdAt: Long,
+        val updatedAt: Long,
+        val userId: String,
+        val packageName: String?,
+        val bundleId: String?,
+        val appStoreId: String?,
+        val domainType: String,
+        val domain: String
+    ) {
+        companion object {
+            fun fromJson(json: JSONObject): LinkData {
+                return LinkData(
+                    id = json.getString("id"),
+                    fullLink = json.getString("fullLink"),
+                    createdAt = json.getLong("createdAt"),
+                    updatedAt = json.getLong("updatedAt"),
+                    userId = json.getString("userId"),
+                    packageName = json.optString("packageName", ""),
+                    bundleId = json.optString("bundleId", ""),
+                    appStoreId = json.optString("appStoreId", ""),
+                    domainType = json.getString("domainType"),
+                    domain = json.getString("domain")
+                )
+            }
+        }
+    }
+
+    /**
+     * Configure LinkLab with an API key for authentication.
+     *
+     * @param apiKey The API key to use for authentication
+     * @return This LinkLab instance for chaining
+     */
+    fun configure(apiKey: String): LinkLab {
+        this.apiKey = apiKey
+        return this
+    }
+
+    /**
+     * Add a listener for dynamic link events.
+     *
+     * @param listener The listener to add
+     * @return This LinkLab instance for chaining
+     */
+    fun addListener(listener: LinkLabListener): LinkLab {
+        if (!listeners.contains(listener)) {
+            listeners.add(listener)
+        }
+        return this
+    }
+
+    /**
+     * Remove a listener for dynamic link events.
+     *
+     * @param listener The listener to remove
+     * @return This LinkLab instance for chaining
+     */
+    fun removeListener(listener: LinkLabListener): LinkLab {
+        listeners.remove(listener)
+        return this
+    }
+
+    /**
+     * Check if an intent contains a LinkLab dynamic link.
+     *
+     * @param intent The intent to check
+     * @return true if the intent contains a LinkLab dynamic link, false otherwise
+     */
+    fun isLinkLabLink(intent: Intent?): Boolean {
+        if (intent?.data == null) {
+            return false
+        }
+
+        val uri = intent.data ?: return false
+        val host = uri.host ?: return false
+
+        return host == REDIRECT_HOST || host.endsWith(".$REDIRECT_HOST")
+    }
+
+    /**
+     * Process a dynamic link from an intent.
+     * Listeners will be notified when the link is processed.
+     *
+     * @param intent The intent containing the dynamic link
+     * @return true if the intent contained a dynamic link that was processed, false otherwise
+     */
+    fun processDynamicLink(intent: Intent?): Boolean {
+        if (!isLinkLabLink(intent)) {
+            return false
+        }
+
+        val uri = intent?.data ?: return false
+        val linkId = uri.lastPathSegment
+
+        if (linkId.isNullOrEmpty()) {
+            notifyError(IllegalArgumentException("Invalid dynamic link: missing link ID"))
+            return false
+        }
+
+        retrieveLinkDetails(linkId)
+        return true
+    }
+
+    /**
+     * Process a dynamic link directly from a URI.
+     * Listeners will be notified when the link is processed.
+     *
+     * @param shortLinkUri The URI of the short link
+     */
+    fun getDynamicLink(shortLinkUri: Uri) {
+        val host = shortLinkUri.host
+        if (host == null || (host != REDIRECT_HOST && !host.endsWith(".$REDIRECT_HOST"))) {
+            notifyError(IllegalArgumentException("Invalid dynamic link: not a LinkLab domain"))
+            return
+        }
+
+        val linkId = shortLinkUri.lastPathSegment
+        if (linkId.isNullOrEmpty()) {
+            notifyError(IllegalArgumentException("Invalid dynamic link: missing link ID"))
+            return
+        }
+
+        retrieveLinkDetails(linkId)
+    }
+
+    /**
+     * Retrieve a dynamic link's details from the API.
+     *
+     * @param linkId The ID of the link to retrieve
+     */
+    private fun retrieveLinkDetails(linkId: String) {
+        backgroundExecutor.execute {
+            // Build the request
+            val requestBuilder = Request.Builder()
+                .url("$API_HOST/links/$linkId")
+                .get()
+
+            // Add API key authentication if available
+            apiKey?.let {
+                if (it.isNotEmpty()) {
+                    requestBuilder.addHeader("ApiKey", it)
+                }
+            }
+
+            val request = requestBuilder.build()
+
+            // Execute the request
+            httpClient.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    notifyError(Exception("Failed to retrieve link details", e))
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    if (!response.isSuccessful) {
+                        notifyError(Exception("API error: ${response.code}"))
+                        return
+                    }
+
+                    val responseBody = response.body?.string()
+                    if (responseBody.isNullOrEmpty()) {
+                        notifyError(Exception("Empty response from server"))
+                        return
+                    }
+
+                    try {
+                        val json = JSONObject(responseBody)
+                        val linkData = LinkData.fromJson(json)
+                        val fullLink = linkData.fullLink.toUri()
+
+                        notifySuccess(fullLink, linkData)
+                    } catch (e: Exception) {
+                        notifyError(Exception("Failed to parse link data", e))
+                    }
+                }
+            })
+        }
+    }
+
+    /**
+     * Check if the current app is installed via its package name.
+     * This is useful for handling app-specific dynamic links.
+     *
+     * @param packageName The package name to check
+     * @return true if the app is installed, false otherwise
+     */
+    fun isAppInstalled(packageName: String): Boolean {
+        return try {
+            applicationContext.packageManager.getPackageInfo(packageName, 0)
+            true
+        } catch (e: PackageManager.NameNotFoundException) {
+            false
+        }
+    }
+
+    /**
+     * Notify listeners of a successful dynamic link retrieval.
+     *
+     * @param fullLink The full link URI
+     * @param data The link data
+     */
+    private fun notifySuccess(fullLink: Uri, data: LinkData) {
+        mainHandler.post {
+            listeners.forEach { listener ->
+                listener.onDynamicLinkRetrieved(fullLink, data)
+            }
+        }
+    }
+
+    /**
+     * Notify listeners of an error.
+     *
+     * @param exception The exception that occurred
+     */
+    private fun notifyError(exception: Exception) {
+        Log.e(TAG, "Error processing dynamic link", exception)
+        mainHandler.post {
+            listeners.forEach { listener ->
+                listener.onError(exception)
+            }
+        }
+    }
+
+    companion object {
+        private const val TAG = "LinkLab"
+        private const val API_HOST = "https://api.linklab.cc/v1"
+        private const val REDIRECT_HOST = "linklab.cc"
+
+        @Volatile
+        private var instance: LinkLab? = null
+
+        /**
+         * Get the singleton instance of LinkLab.
+         *
+         * @param context The application context
+         * @return The LinkLab instance
+         */
+        fun getInstance(context: Context): LinkLab {
+            return instance ?: synchronized(this) {
+                instance ?: LinkLab(context.applicationContext).also { instance = it }
+            }
+        }
+    }
+}
