@@ -43,6 +43,8 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.squareup.okhttp3:okhttp:4.11.0")
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.0")
+    implementation("androidx.compose.runtime:runtime:1.7.0")
+    implementation("androidx.compose.ui:ui:1.7.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

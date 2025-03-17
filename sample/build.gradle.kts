@@ -48,6 +48,11 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"
     }
+    
+    // Required for Compose with Kotlin 2.0.x
+    configurations.all {
+        resolutionStrategy.force("androidx.compose.runtime:runtime:1.7.0")
+    }
 
     packaging {
         resources {
@@ -64,6 +69,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.2")
 
+    // Compose BOM
+    implementation(platform("androidx.compose:compose-bom:2023.10.00"))
+    
     // Material 3
     implementation("androidx.compose.material3:material3")
 
@@ -80,6 +88,7 @@ dependencies {
     // UI tooling (for previews, etc)
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // Optional - Integration with activities
     implementation("androidx.activity:activity-compose:1.8.2")
