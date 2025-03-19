@@ -2,7 +2,7 @@ package cc.linklab.android
 
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -20,6 +20,7 @@ import androidx.core.net.toUri
 import com.android.installreferrer.api.InstallReferrerClient
 import com.android.installreferrer.api.InstallReferrerStateListener
 import com.android.installreferrer.api.ReferrerDetails
+import androidx.core.content.edit
 
 /**
  * LinkLab is a library for handling dynamic links for Android applications.
@@ -32,9 +33,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = mutableListOf<LinkLabListener>()
     private var referrerClient: InstallReferrerClient? = null
+    private val preferences: SharedPreferences = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private var apiKey: String? = null
-    private var checkedInstallReferrer = false
+    private var checkedInstallReferrer = preferences.getBoolean(KEY_CHECKED_INSTALL_REFERRER, false)
 
     /**
      * Interface for callbacks when a dynamic link is processed.
@@ -246,21 +248,6 @@ class LinkLab private constructor(private val applicationContext: Context) {
         }
     }
 
-    /**
-     * Check if the current app is installed via its package name.
-     * This is useful for handling app-specific dynamic links.
-     *
-     * @param packageName The package name to check
-     * @return true if the app is installed, false otherwise
-     */
-    fun isAppInstalled(packageName: String): Boolean {
-        return try {
-            applicationContext.packageManager.getPackageInfo(packageName, 0)
-            true
-        } catch (e: PackageManager.NameNotFoundException) {
-            false
-        }
-    }
 
     /**
      * Notify listeners of a successful dynamic link retrieval.
@@ -296,6 +283,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
      */
     private fun checkInstallReferrer() {
         checkedInstallReferrer = true
+        preferences.edit() { putBoolean(KEY_CHECKED_INSTALL_REFERRER, true) }
         
         try {
             // Initialize the Install Referrer client
@@ -388,6 +376,8 @@ class LinkLab private constructor(private val applicationContext: Context) {
         private const val TAG = "LinkLab"
         private const val API_HOST = "https://api.linklab.cc/v1"
         private const val REDIRECT_HOST = "linklab.cc"
+        private const val PREFS_NAME = "linklab_prefs"
+        private const val KEY_CHECKED_INSTALL_REFERRER = "checked_install_referrer"
 
         @Volatile
         private var instance: LinkLab? = null
