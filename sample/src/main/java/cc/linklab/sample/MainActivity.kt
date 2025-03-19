@@ -19,6 +19,7 @@ class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
         setContentView(R.layout.activity_main)
 
         // Initialize LinkLab
+        // This will automatically check for install referrer with linklab_id
         LinkLab.getInstance(this)
             .configure(API_KEY)
             .addListener(this)

@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import androidx.annotation.NonNull
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.Executor
@@ -18,6 +17,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import androidx.core.net.toUri
+import com.android.installreferrer.api.InstallReferrerClient
+import com.android.installreferrer.api.InstallReferrerStateListener
+import com.android.installreferrer.api.ReferrerDetails
 
 /**
  * LinkLab is a library for handling dynamic links for Android applications.
@@ -29,8 +31,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
     private val backgroundExecutor: Executor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = mutableListOf<LinkLabListener>()
+    private var referrerClient: InstallReferrerClient? = null
 
     private var apiKey: String? = null
+    private var checkedInstallReferrer = false
 
     /**
      * Interface for callbacks when a dynamic link is processed.
@@ -93,6 +97,12 @@ class LinkLab private constructor(private val applicationContext: Context) {
      */
     fun configure(apiKey: String): LinkLab {
         this.apiKey = apiKey
+        
+        // Check for install referrer if this is the first configuration
+        if (!checkedInstallReferrer) {
+            checkInstallReferrer()
+        }
+        
         return this
     }
 
@@ -277,6 +287,100 @@ class LinkLab private constructor(private val applicationContext: Context) {
             listeners.forEach { listener ->
                 listener.onError(exception)
             }
+        }
+    }
+
+    /**
+     * Check for install referrer information to capture initial install source.
+     * This will extract the linklab_id parameter from the referrer URL if present.
+     */
+    private fun checkInstallReferrer() {
+        checkedInstallReferrer = true
+        
+        try {
+            // Initialize the Install Referrer client
+            referrerClient = InstallReferrerClient.newBuilder(applicationContext).build()
+            
+            // Set up the connection to Google Play
+            referrerClient?.startConnection(object : InstallReferrerStateListener {
+                override fun onInstallReferrerSetupFinished(responseCode: Int) {
+                    when (responseCode) {
+                        InstallReferrerClient.InstallReferrerResponse.OK -> {
+                            // Connection established, get referrer details
+                            try {
+                                val referrerDetails = referrerClient?.installReferrer
+                                parseReferrerDetails(referrerDetails)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error getting install referrer details", e)
+                            } finally {
+                                // End the connection
+                                referrerClient?.endConnection()
+                            }
+                        }
+                        
+                        InstallReferrerClient.InstallReferrerResponse.FEATURE_NOT_SUPPORTED -> {
+                            Log.w(TAG, "Install Referrer not supported on this device")
+                            referrerClient?.endConnection()
+                        }
+                        
+                        InstallReferrerClient.InstallReferrerResponse.SERVICE_UNAVAILABLE -> {
+                            Log.w(TAG, "Install Referrer service unavailable")
+                            referrerClient?.endConnection()
+                        }
+                        
+                        else -> {
+                            Log.w(TAG, "Install Referrer connection failed with code: $responseCode")
+                            referrerClient?.endConnection()
+                        }
+                    }
+                }
+
+                override fun onInstallReferrerServiceDisconnected() {
+                    // Connection to the service was lost, handle if needed
+                    Log.d(TAG, "Install Referrer service disconnected")
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting up Install Referrer", e)
+        }
+    }
+
+    /**
+     * Parse the referrer details and extract the linklab_id parameter if present.
+     */
+    private fun parseReferrerDetails(referrerDetails: ReferrerDetails?) {
+        if (referrerDetails == null) {
+            Log.d(TAG, "No referrer details available")
+            return
+        }
+        
+        try {
+            val referrerUrl = referrerDetails.installReferrer
+            Log.d(TAG, "Install referrer: $referrerUrl")
+            
+            // Parse the referrer URL to extract parameters
+            if (referrerUrl.isNotEmpty()) {
+                // The referrer string is usually URL encoded, so we need to parse it
+                val params = referrerUrl.split("&")
+                var linkLabId: String? = null
+                
+                // Look for the linklab_id parameter
+                for (param in params) {
+                    val keyValue = param.split("=")
+                    if (keyValue.size == 2 && keyValue[0] == "linklab_id") {
+                        linkLabId = keyValue[1]
+                        break
+                    }
+                }
+                
+                // If we found a linklab_id, retrieve the link details
+                if (!linkLabId.isNullOrEmpty()) {
+                    Log.d(TAG, "Found linklab_id in install referrer: $linkLabId")
+                    retrieveLinkDetails(linkLabId)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing referrer details", e)
         }
     }
 

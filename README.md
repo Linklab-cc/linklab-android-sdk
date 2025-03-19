@@ -8,12 +8,14 @@ The LinkLab Android SDK makes it easy to implement dynamic links in your Android
 - Retrieve full links from short links
 - Handle custom deep link routing
 - Automatically track dynamic link analytics
+- Capture Google Play install referrer information to track app installs from LinkLab links
 
 ## Requirements
 
 - Android SDK 21+
 - Kotlin 2.0+
 - OkHttp 4.11.0+
+- Google Play Install Referrer Library 2.2+
 
 ## Installation
 
@@ -39,6 +41,8 @@ LinkLab.getInstance(context)
     .configure("your_api_key_here")
     .addListener(this)
 ```
+
+This initialization will automatically check for install referrer information if the app is being opened for the first time after installation. If the app was installed through a LinkLab link that contains a `linklab_id` parameter, it will retrieve the link details.
 
 ### Processing Dynamic Links
 
@@ -129,6 +133,24 @@ private fun handleFullLink(fullLink: Uri, data: LinkLab.LinkData) {
 }
 ```
 
+## Install Referrer Integration
+
+The SDK automatically integrates with the Google Play Install Referrer API to track app installs from LinkLab links. When a user installs your app through a LinkLab link, the SDK will:
+
+1. Retrieve the install referrer information from Google Play
+2. Extract the `linklab_id` parameter from the referrer URL
+3. Fetch the full link details from the LinkLab API
+4. Deliver the results through the same listener interface
+
+This allows you to attribute app installs to specific LinkLab marketing campaigns and provide a personalized onboarding experience based on the link that led to the installation.
+
+### How It Works
+
+1. When a user clicks on this link and installs your app from Google Play, the install referrer information is stored
+2. When your app launches for the first time, the SDK automatically checks for install referrer information
+3. If the referrer is linklab the SDK fetches the full link details
+4. Your app receives the same callback as if the user had opened a dynamic link directly
+
 ## Sample App
 
 This repository includes a sample app that demonstrates how to use the LinkLab SDK. To run the sample app:
@@ -137,6 +159,8 @@ This repository includes a sample app that demonstrates how to use the LinkLab S
 2. Open the project in Android Studio
 3. Replace `your_api_key_here` in `MainActivity.kt` with your LinkLab API key
 4. Run the sample app on your device
+
+The sample app demonstrates both direct deep linking and install referrer handling.
 
 ## License
 
