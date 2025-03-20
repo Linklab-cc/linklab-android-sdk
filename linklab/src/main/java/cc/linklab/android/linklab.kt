@@ -7,20 +7,22 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import org.json.JSONObject
-import java.io.IOException
-import java.util.concurrent.Executor
-import java.util.concurrent.Executors
+import androidx.core.content.edit
+import androidx.core.net.toUri
+import com.android.installreferrer.api.InstallReferrerClient
+import com.android.installreferrer.api.InstallReferrerStateListener
+import com.android.installreferrer.api.ReferrerDetails
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import androidx.core.net.toUri
-import com.android.installreferrer.api.InstallReferrerClient
-import com.android.installreferrer.api.InstallReferrerStateListener
-import com.android.installreferrer.api.ReferrerDetails
-import androidx.core.content.edit
+import org.json.JSONObject
+import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.TimeZone
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * LinkLab is a library for handling dynamic links for Android applications.
@@ -35,7 +37,6 @@ class LinkLab private constructor(private val applicationContext: Context) {
     private var referrerClient: InstallReferrerClient? = null
     private val preferences: SharedPreferences = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    private var apiKey: String? = null
     private var checkedInstallReferrer = preferences.getBoolean(KEY_CHECKED_INSTALL_REFERRER, false)
 
     /**
@@ -74,31 +75,52 @@ class LinkLab private constructor(private val applicationContext: Context) {
         val domain: String
     ) {
         companion object {
+            private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+
             fun fromJson(json: JSONObject): LinkData {
+                // Parse date strings to Long timestamps
+                val createdAtStr = json.optString("createdAt")
+                val updatedAtStr = json.optString("updatedAt")
+
+                val createdAt = if (createdAtStr.isNotEmpty()) {
+                    try {
+                        dateFormat.parse(createdAtStr)?.time ?: 0L
+                    } catch (e: Exception) {
+                        0L
+                    }
+                } else 0L
+
+                val updatedAt = if (updatedAtStr.isNotEmpty()) {
+                    try {
+                        dateFormat.parse(updatedAtStr)?.time ?: 0L
+                    } catch (e: Exception) {
+                        0L
+                    }
+                } else 0L
+
                 return LinkData(
                     id = json.getString("id"),
                     fullLink = json.getString("fullLink"),
-                    createdAt = json.getLong("createdAt"),
-                    updatedAt = json.getLong("updatedAt"),
+                    createdAt = createdAt,
+                    updatedAt = updatedAt,
                     userId = json.getString("userId"),
-                    packageName = json.optString("packageName", ""),
-                    bundleId = json.optString("bundleId", ""),
-                    appStoreId = json.optString("appStoreId", ""),
-                    domainType = json.getString("domainType"),
-                    domain = json.getString("domain")
+                    packageName = if (json.has("packageName")) json.optString("packageName", "") else null,
+                    bundleId = if (json.has("bundleId")) json.optString("bundleId", "") else null,
+                    appStoreId = if (json.has("appStoreId")) json.optString("appStoreId", "") else null,
+                    domainType = json.optString("domainType", ""),
+                    domain = json.optString("domain", "")
                 )
             }
         }
     }
-
     /**
      * Configure LinkLab with an API key for authentication.
      *
-     * @param apiKey The API key to use for authentication
      * @return This LinkLab instance for chaining
      */
-    fun configure(apiKey: String): LinkLab {
-        this.apiKey = apiKey
+    fun configure(): LinkLab {
         
         // Check for install referrer if this is the first configuration
         if (!checkedInstallReferrer) {
@@ -206,13 +228,6 @@ class LinkLab private constructor(private val applicationContext: Context) {
             val requestBuilder = Request.Builder()
                 .url("$API_HOST/links/$linkId")
                 .get()
-
-            // Add API key authentication if available
-            apiKey?.let {
-                if (it.isNotEmpty()) {
-                    requestBuilder.addHeader("ApiKey", it)
-                }
-            }
 
             val request = requestBuilder.build()
 
@@ -374,7 +389,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
 
     companion object {
         private const val TAG = "LinkLab"
-        private const val API_HOST = "https://api.linklab.cc/v1"
+        private const val API_HOST = "https://linklab.cc"
         private const val REDIRECT_HOST = "linklab.cc"
         private const val PREFS_NAME = "linklab_prefs"
         private const val KEY_CHECKED_INSTALL_REFERRER = "checked_install_referrer"
