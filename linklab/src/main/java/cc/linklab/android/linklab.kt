@@ -220,11 +220,36 @@ class LinkLab private constructor(private val applicationContext: Context) {
      * Retrieve a dynamic link's details from the API.
      *
      * @param linkId The ID of the link to retrieve
+     * @param domainType Optional domain type parameter
+     * @param domain Optional domain parameter
      */
-    private fun retrieveLinkDetails(linkId: String) {
+    private fun retrieveLinkDetails(linkId: String, domainType: String? = null, domain: String? = null) {
         backgroundExecutor.execute {
+            val urlBuilder = StringBuilder("$API_HOST/links/$linkId")
+
+            // Add query parameters if they exist
+            if (!domainType.isNullOrEmpty() || !domain.isNullOrEmpty()) {
+                urlBuilder.append("?")
+                var hasParameters = false
+                
+                if (!domainType.isNullOrEmpty()) {
+                    urlBuilder.append("domain_type=").append(domainType)
+                    hasParameters = true
+                }
+                
+                if (!domain.isNullOrEmpty()) {
+                    if (hasParameters) {
+                        urlBuilder.append("&")
+                    }
+                    urlBuilder.append("domain=").append(domain)
+                }
+            }
+            
+            val finalUrl = urlBuilder.toString()
+            Log.d(TAG, "Requesting link details from: $finalUrl")
+            
             val requestBuilder = Request.Builder()
-                .url("$API_HOST/links/$linkId")
+                .url(finalUrl)
                 .get()
 
             val request = requestBuilder.build()
@@ -346,7 +371,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
     }
 
     /**
-     * Parse the referrer details and extract the linklab_id parameter if present.
+     * Parse the referrer details and extract the linklab_id, domain_type, and domain parameters if present.
      */
     private fun parseReferrerDetails(referrerDetails: ReferrerDetails?) {
         if (referrerDetails == null) {
@@ -363,20 +388,26 @@ class LinkLab private constructor(private val applicationContext: Context) {
                 // The referrer string is usually URL encoded, so we need to parse it
                 val params = referrerUrl.split("&")
                 var linkLabId: String? = null
+                var domainType: String? = null
+                var domain: String? = null
                 
-                // Look for the linklab_id parameter
+                // Look for the linklab parameters
                 for (param in params) {
                     val keyValue = param.split("=")
-                    if (keyValue.size == 2 && keyValue[0] == "linklab_id") {
-                        linkLabId = keyValue[1]
-                        break
+                    if (keyValue.size == 2) {
+                        when (keyValue[0]) {
+                            "linklab_id" -> linkLabId = keyValue[1]
+                            "domain_type" -> domainType = keyValue[1]
+                            "domain" -> domain = keyValue[1]
+                        }
                     }
                 }
                 
                 // If we found a linklab_id, retrieve the link details
                 if (!linkLabId.isNullOrEmpty()) {
                     Log.d(TAG, "Found linklab_id in install referrer: $linkLabId")
-                    retrieveLinkDetails(linkLabId)
+                    Log.d(TAG, "Domain type: $domainType, Domain: $domain")
+                    retrieveLinkDetails(linkLabId, domainType, domain)
                 }
             }
         } catch (e: Exception) {
