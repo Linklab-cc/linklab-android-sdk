@@ -116,13 +116,12 @@ class LinkLab private constructor(private val applicationContext: Context) {
         }
     }
     /**
-     * Configure LinkLab with an API key for authentication.
+     * Init LinkLab
      *
      * @return This LinkLab instance for chaining
      */
-    fun configure(): LinkLab {
-        
-        // Check for install referrer if this is the first configuration
+    fun init(): LinkLab {
+        // Check for install referrer if this is the first initialization
         if (!checkedInstallReferrer) {
             checkInstallReferrer()
         }
@@ -224,14 +223,12 @@ class LinkLab private constructor(private val applicationContext: Context) {
      */
     private fun retrieveLinkDetails(linkId: String) {
         backgroundExecutor.execute {
-            // Build the request
             val requestBuilder = Request.Builder()
                 .url("$API_HOST/links/$linkId")
                 .get()
 
             val request = requestBuilder.build()
 
-            // Execute the request
             httpClient.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     notifyError(Exception("Failed to retrieve link details", e))
