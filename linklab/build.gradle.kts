@@ -3,6 +3,7 @@ plugins {
     id("com.android.library")
     id("kotlin-android")
     id("maven-publish")
+    id("signing")
     alias(libs.plugins.compose.compiler)
 }
 
@@ -61,8 +62,40 @@ afterEvaluate {
 
                 groupId = "cc.linklab"
                 artifactId = "android"
-                version = "1.0.0"
+                version = "0.0.1-SNAPSHOT"
+                
+                pom {
+                    name.set("LinkLab Android SDK")
+                    description.set("Android SDK for LinkLab integration")
+                    url.set("https://github.com/linklab/linklab-android-sdk")
+                    
+                    licenses {
+                        license {
+                            name.set("The Apache License, Version 2.0")
+                            url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
+                        }
+                    }
+                    
+                    developers {
+                        developer {
+                            id.set("linklab")
+                            name.set("LinkLab")
+                            email.set("dev@linklab.cc")
+                        }
+                    }
+                    
+                    scm {
+                        connection.set("scm:git:git://github.com/linklab/linklab-android-sdk.git")
+                        developerConnection.set("scm:git:ssh://github.com/linklab/linklab-android-sdk.git")
+                        url.set("https://github.com/linklab/linklab-android-sdk")
+                    }
+                }
             }
         }
+    }
+
+    // Set up signing
+    signing {
+        sign(publishing.publications["release"])
     }
 }

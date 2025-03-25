@@ -4,20 +4,34 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+tasks.named("preBuild") {
+    dependsOn(":linklab:assemble")
+}
+
 android {
     namespace = "cc.linklab.sample"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "cc.linklab.sample"
+        applicationId = "tech.potje.app.dev"
         minSdk = 21
         targetSdk = 35
-        versionCode = 1
+        versionCode = 277
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+    }
+
+    signingConfigs {
+
+        create("release") {
+            keyAlias = "upload"//keystoreProperties["keyAlias"] as String
+            keyPassword = "jyR_P9_e#5?5qCGL"//keystoreProperties["keyPassword"]?.toString() ?: System.getenv("ANDROID_KEYSTORE_PASS")
+            storeFile = file("./keystore/upload-keystore.jks")//keystoreProperties["storeFile"]?.let { file(it.toString()) }
+            storePassword = "jyR_P9_e#5?5qCGL"//keystoreProperties["storePassword"]?.toString() ?: System.getenv("ANDROID_KEY_PASS")
         }
     }
 
@@ -28,6 +42,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
@@ -57,7 +72,9 @@ android {
 }
 
 dependencies {
-    implementation(project(":linklab"))
+    implementation(project(":linklab")) {
+        isTransitive = true
+    }
 
     // Core Android dependencies
     implementation(libs.androidx.core.ktx.v1120)
@@ -82,6 +99,7 @@ dependencies {
 
     // UI tooling (for previews, etc)
     implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation(libs.installreferrer)
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
