@@ -231,6 +231,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
      * @param domain Optional domain parameter
      */
     private fun retrieveLinkDetails(linkId: String, domainType: String? = null, domain: String? = null) {
+        Log.d(TAG, "retrieveLinkDetails. linkId: $linkId, domainType: $domainType, domain: $domain")
+        Thread.currentThread().stackTrace.forEach {
+            Log.d("StackTrace", it.toString())
+        }
         backgroundExecutor.execute {
             val urlBuilder = StringBuilder("$API_HOST/links/$linkId")
 
@@ -268,12 +272,14 @@ class LinkLab private constructor(private val applicationContext: Context) {
 
                 override fun onResponse(call: Call, response: Response) {
                     if (!response.isSuccessful) {
+                        Log.d(TAG, "Link details retrieving error")
                         notifyError(Exception("API error: ${response.code}"))
                         return
                     }
 
                     val responseBody = response.body?.string()
                     if (responseBody.isNullOrEmpty()) {
+                        Log.d(TAG, "Got empty body from server")
                         notifyError(Exception("Empty response from server"))
                         return
                     }
@@ -282,9 +288,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
                         val json = JSONObject(responseBody)
                         val linkData = LinkData.fromJson(json)
                         val fullLink = linkData.fullLink.toUri()
-
+                        Log.d(TAG, "Link details retrieved successfully $linkData")
                         notifySuccess(fullLink, linkData)
                     } catch (e: Exception) {
+                        Log.d(TAG, "Failed to parse link data")
                         notifyError(Exception("Failed to parse link data", e))
                     }
                 }
