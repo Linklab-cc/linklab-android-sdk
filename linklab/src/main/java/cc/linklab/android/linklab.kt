@@ -184,13 +184,17 @@ class LinkLab private constructor(private val applicationContext: Context) {
 
         val uri = intent?.data ?: return false
         val linkId = uri.lastPathSegment
+        val domain = uri.host
 
         if (linkId.isNullOrEmpty()) {
             notifyError(IllegalArgumentException("Invalid dynamic link: missing link ID"))
             return false
         }
 
-        retrieveLinkDetails(linkId)
+        // Determine domain type based on the host
+        val domainType = if (domain == REDIRECT_HOST) "rootDomain" else "subDomain"
+        
+        retrieveLinkDetails(linkId, domainType, domain)
         return true
     }
 
@@ -201,8 +205,8 @@ class LinkLab private constructor(private val applicationContext: Context) {
      * @param shortLinkUri The URI of the short link
      */
     fun getDynamicLink(shortLinkUri: Uri) {
-        val host = shortLinkUri.host
-        if (host == null || (host != REDIRECT_HOST && !host.endsWith(".$REDIRECT_HOST"))) {
+        val domain = shortLinkUri.host
+        if (domain == null || (domain != REDIRECT_HOST && !domain.endsWith(".$REDIRECT_HOST"))) {
             notifyError(IllegalArgumentException("Invalid dynamic link: not a LinkLab domain"))
             return
         }
@@ -213,7 +217,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
             return
         }
 
-        retrieveLinkDetails(linkId)
+        // Determine domain type based on the host
+        val domainType = if (domain == REDIRECT_HOST) "rootDomain" else "subDomain"
+        
+        retrieveLinkDetails(linkId, domainType, domain)
     }
 
     /**
@@ -401,6 +408,11 @@ class LinkLab private constructor(private val applicationContext: Context) {
                             "domain" -> domain = keyValue[1]
                         }
                     }
+                }
+                
+                // If domainType is not provided but we have a domain, determine it
+                if (domainType.isNullOrEmpty() && !domain.isNullOrEmpty()) {
+                    domainType = if (domain == REDIRECT_HOST) "rootDomain" else "subDomain"
                 }
                 
                 // If we found a linklab_id, retrieve the link details

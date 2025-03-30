@@ -37,6 +37,13 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+            withJavadocJar()
+        }
+    }
 }
 
 dependencies {
@@ -60,34 +67,34 @@ afterEvaluate {
             create<MavenPublication>("release") {
                 from(components["release"])
 
-                groupId = "cc.linklab"
+                groupId = project.findProperty("group")?.toString() ?: "cc.linklab"
                 artifactId = "android"
-                version = "0.0.1-SNAPSHOT"
+                version = project.findProperty("version")?.toString() ?: "0.0.1-SNAPSHOT"
                 
                 pom {
                     name.set("LinkLab Android SDK")
-                    description.set("Android SDK for LinkLab integration")
-                    url.set("https://github.com/linklab/linklab-android-sdk")
+                    description.set(project.findProperty("projectDescription")?.toString() ?: "Android SDK for LinkLab integration")
+                    url.set(project.findProperty("projectUrl")?.toString() ?: "https://github.com/linklab/linklab-android-sdk")
                     
                     licenses {
                         license {
-                            name.set("The Apache License, Version 2.0")
-                            url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
+                            name.set(project.findProperty("projectLicenseName")?.toString() ?: "The Apache License, Version 2.0")
+                            url.set(project.findProperty("projectLicenseUrl")?.toString() ?: "http://www.apache.org/licenses/LICENSE-2.0.txt")
                         }
                     }
                     
                     developers {
                         developer {
-                            id.set("linklab")
-                            name.set("LinkLab")
-                            email.set("dev@linklab.cc")
+                            id.set(project.findProperty("projectAuthorId")?.toString() ?: "linklab")
+                            name.set(project.findProperty("projectAuthorName")?.toString() ?: "LinkLab")
+                            email.set(project.findProperty("projectAuthorEmail")?.toString() ?: "info@linklab.cc")
                         }
                     }
                     
                     scm {
-                        connection.set("scm:git:git://github.com/linklab/linklab-android-sdk.git")
-                        developerConnection.set("scm:git:ssh://github.com/linklab/linklab-android-sdk.git")
-                        url.set("https://github.com/linklab/linklab-android-sdk")
+//                        connection.set(project.findProperty("projectScmConnection")?.toString() ?: "scm:git:git://github.com/linklab/linklab-android-sdk.git")
+//                        developerConnection.set(project.findProperty("projectScmDeveloperConnection")?.toString() ?: "scm:git:ssh://github.com/linklab/linklab-android-sdk.git")
+                        url.set(project.findProperty("projectScmUrl")?.toString() ?: "https://github.com/linklab/linklab-android-sdk")
                     }
                 }
             }
@@ -97,5 +104,20 @@ afterEvaluate {
     // Set up signing
     signing {
         sign(publishing.publications["release"])
+    }
+}
+
+// Tasks for publishing to Maven Central
+tasks.register("publishLinkLabToSonatype") {
+    dependsOn("publishReleasePublicationToSonatypeRepository")
+    doLast {
+        println("Published to Sonatype repository")
+    }
+}
+
+tasks.register("releaseSonatypeRepository") {
+    dependsOn(rootProject.tasks.named("closeAndReleaseSonatypeStagingRepository"))
+    doLast {
+        println("Closed and released Sonatype staging repository")
     }
 }
