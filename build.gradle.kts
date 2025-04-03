@@ -6,19 +6,33 @@ plugins {
 }
 
 tasks.register("clean", Delete::class) {
-    delete(rootProject.buildDir)
+    delete(rootProject.layout.buildDirectory.get())
 }
 
 nexusPublishing {
     repositories {
         sonatype {
-            // For library hosted on Maven Central (via Sonatype OSSRH)
-            nexusUrl.set(uri("https://s01.oss.sonatype.org/service/local/"))
-            snapshotRepositoryUrl.set(uri("https://s01.oss.sonatype.org/content/repositories/snapshots/"))
+            nexusUrl.set(uri("https://central.sonatype.com/repository/maven-releases/"))
+            snapshotRepositoryUrl.set(uri("https://central.sonatype.com/repository/maven-snapshots/"))
             
             // Credentials should be provided via gradle.properties or environment variables
             username.set(System.getenv("OSSRH_USERNAME") ?: findProperty("ossrhUsername")?.toString() ?: "")
             password.set(System.getenv("OSSRH_PASSWORD") ?: findProperty("ossrhPassword")?.toString() ?: "")
         }
+    }
+}
+
+// Convenience tasks for publishing
+tasks.register("publishToMavenCentral") {
+    dependsOn(":linklab:publishLinkLabToSonatype")
+    doLast {
+        println("Publishing to Maven Central...")
+    }
+}
+
+tasks.register("publishAndRelease") {
+    dependsOn(":linklab:publishLinkLabToSonatype", ":linklab:releaseSonatypeRepository")
+    doLast {
+        println("Publishing and releasing to Maven Central...")
     }
 }

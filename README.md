@@ -183,7 +183,9 @@ This project is licensed under the Apache License, Version 2.0. See the LICENSE 
 
 ## Publishing to Maven Central
 
-To publish the library to Maven Central:
+The library uses the Nexus Publish Plugin to deploy to Maven Central. For detailed instructions, see [PUBLISHING.md](PUBLISHING.md).
+
+Quick guide:
 
 1. Setup your Sonatype OSSRH account and GPG key
 2. Add credentials to `~/.gradle/gradle.properties`:
@@ -202,13 +204,10 @@ signing.secretKeyRingFile=/path/to/your/gpg/secring.gpg
 
 ```bash
 # For SNAPSHOT versions
-./gradlew publishToSonatype
-```
+./gradlew publishToMavenCentral
 
-For releasing non-SNAPSHOT versions, use:
-
-```bash
-./gradlew publishToSonatype closeAndReleaseSonatypeStagingRepository
+# For release versions (publishes and releases)
+./gradlew publishAndRelease
 ```
 
 ## Support
