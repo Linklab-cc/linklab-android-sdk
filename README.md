@@ -25,7 +25,22 @@ Add the LinkLab SDK to your project by including it in your app's `build.gradle.
 
 ```kotlin
 dependencies {
-    implementation("cc.linklab:android:1.0.0")
+    implementation("cc.linklab:android:0.0.1-SNAPSHOT")
+}
+```
+
+Make sure you have the Maven Central repository in your project's `settings.gradle.kts`:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        // For SNAPSHOT versions
+        maven {
+            url = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
+        }
+    }
 }
 ```
 
@@ -165,6 +180,35 @@ The sample app demonstrates both direct deep linking and install referrer handli
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See the LICENSE file for details.
+
+## Publishing to Maven Central
+
+The library uses the Nexus Publish Plugin to deploy to Maven Central. For detailed instructions, see [PUBLISHING.md](PUBLISHING.md).
+
+Quick guide:
+
+1. Setup your Sonatype OSSRH account and GPG key
+2. Add credentials to `~/.gradle/gradle.properties`:
+
+```properties
+ossrhUsername=your_sonatype_username
+ossrhPassword=your_sonatype_password
+
+# For GPG signing
+signing.keyId=your_gpg_key_id_last_8_chars
+signing.password=your_gpg_key_password
+signing.secretKeyRingFile=/path/to/your/gpg/secring.gpg
+```
+
+3. Publish with:
+
+```bash
+# For SNAPSHOT versions
+./gradlew publishToMavenCentral
+
+# For release versions (publishes and releases)
+./gradlew publishAndRelease
+```
 
 ## Support
 

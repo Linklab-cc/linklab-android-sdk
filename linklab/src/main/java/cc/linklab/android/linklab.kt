@@ -184,13 +184,17 @@ class LinkLab private constructor(private val applicationContext: Context) {
 
         val uri = intent?.data ?: return false
         val linkId = uri.lastPathSegment
+        val domain = uri.host
 
         if (linkId.isNullOrEmpty()) {
             notifyError(IllegalArgumentException("Invalid dynamic link: missing link ID"))
             return false
         }
 
-        retrieveLinkDetails(linkId)
+        // Determine domain type based on the host
+        val domainType = if (domain == REDIRECT_HOST) "rootDomain" else "subDomain"
+        
+        retrieveLinkDetails(linkId, domainType, domain)
         return true
     }
 
@@ -201,8 +205,8 @@ class LinkLab private constructor(private val applicationContext: Context) {
      * @param shortLinkUri The URI of the short link
      */
     fun getDynamicLink(shortLinkUri: Uri) {
-        val host = shortLinkUri.host
-        if (host == null || (host != REDIRECT_HOST && !host.endsWith(".$REDIRECT_HOST"))) {
+        val domain = shortLinkUri.host
+        if (domain == null || (domain != REDIRECT_HOST && !domain.endsWith(".$REDIRECT_HOST"))) {
             notifyError(IllegalArgumentException("Invalid dynamic link: not a LinkLab domain"))
             return
         }
@@ -213,7 +217,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
             return
         }
 
-        retrieveLinkDetails(linkId)
+        // Determine domain type based on the host
+        val domainType = if (domain == REDIRECT_HOST) "rootDomain" else "subDomain"
+        
+        retrieveLinkDetails(linkId, domainType, domain)
     }
 
     /**
@@ -224,6 +231,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
      * @param domain Optional domain parameter
      */
     private fun retrieveLinkDetails(linkId: String, domainType: String? = null, domain: String? = null) {
+        Log.d(TAG, "retrieveLinkDetails. linkId: $linkId, domainType: $domainType, domain: $domain")
+        Thread.currentThread().stackTrace.forEach {
+            Log.d("StackTrace", it.toString())
+        }
         backgroundExecutor.execute {
             val urlBuilder = StringBuilder("$API_HOST/links/$linkId")
 
@@ -261,12 +272,14 @@ class LinkLab private constructor(private val applicationContext: Context) {
 
                 override fun onResponse(call: Call, response: Response) {
                     if (!response.isSuccessful) {
+                        Log.d(TAG, "Link details retrieving error")
                         notifyError(Exception("API error: ${response.code}"))
                         return
                     }
 
                     val responseBody = response.body?.string()
                     if (responseBody.isNullOrEmpty()) {
+                        Log.d(TAG, "Got empty body from server")
                         notifyError(Exception("Empty response from server"))
                         return
                     }
@@ -275,9 +288,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
                         val json = JSONObject(responseBody)
                         val linkData = LinkData.fromJson(json)
                         val fullLink = linkData.fullLink.toUri()
-
+                        Log.d(TAG, "Link details retrieved successfully $linkData")
                         notifySuccess(fullLink, linkData)
                     } catch (e: Exception) {
+                        Log.d(TAG, "Failed to parse link data")
                         notifyError(Exception("Failed to parse link data", e))
                     }
                 }
@@ -401,6 +415,11 @@ class LinkLab private constructor(private val applicationContext: Context) {
                             "domain" -> domain = keyValue[1]
                         }
                     }
+                }
+                
+                // If domainType is not provided but we have a domain, determine it
+                if (domainType.isNullOrEmpty() && !domain.isNullOrEmpty()) {
+                    domainType = if (domain == REDIRECT_HOST) "rootDomain" else "subDomain"
                 }
                 
                 // If we found a linklab_id, retrieve the link details
