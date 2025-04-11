@@ -282,11 +282,11 @@ class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
         if (!isActivityActive) return
         
         Log.d(TAG, "Dynamic link retrieved: $fullLink")
-        Log.d(TAG, "Link data details: id=${data.id}, domainType=${data.domainType}, domain=${data.domain}")
+        Log.d(TAG, "Link data details: id=${data.id}, domain=${data.domain}")
 
         try {
             // Update UI first before doing any processing
-            updateLinklabTextView("LinkLab link: $fullLink\n\nData: id=${data.id}, package=${data.packageName}")
+            updateLinklabTextView("LinkLab link: $fullLink\\n\\nData: id=${data.id}, package=${data.packageName}")
 
             // Show toast with delay to avoid UI thread congestion
             android.os.Handler(mainLooper).postDelayed({

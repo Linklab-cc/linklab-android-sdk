@@ -71,7 +71,6 @@ class LinkLab private constructor(private val applicationContext: Context) {
         val packageName: String?,
         val bundleId: String?,
         val appStoreId: String?,
-        val domainType: String,
         val domain: String
     ) {
         companion object {
@@ -109,7 +108,6 @@ class LinkLab private constructor(private val applicationContext: Context) {
                     packageName = if (json.has("packageName")) json.optString("packageName", "") else null,
                     bundleId = if (json.has("bundleId")) json.optString("bundleId", "") else null,
                     appStoreId = if (json.has("appStoreId")) json.optString("appStoreId", "") else null,
-                    domainType = json.optString("domainType", ""),
                     domain = json.optString("domain", "")
                 )
             }
@@ -191,10 +189,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
             return false
         }
 
-        // Determine domain type based on the host
-        val domainType = if (domain == REDIRECT_HOST) "rootDomain" else "subDomain"
-        
-        retrieveLinkDetails(linkId, domainType, domain)
+        retrieveLinkDetails(linkId, domain)
         return true
     }
 
@@ -217,43 +212,23 @@ class LinkLab private constructor(private val applicationContext: Context) {
             return
         }
 
-        // Determine domain type based on the host
-        val domainType = if (domain == REDIRECT_HOST) "rootDomain" else "subDomain"
-        
-        retrieveLinkDetails(linkId, domainType, domain)
+        retrieveLinkDetails(linkId, domain)
     }
 
     /**
      * Retrieve a dynamic link's details from the API.
      *
      * @param linkId The ID of the link to retrieve
-     * @param domainType Optional domain type parameter
-     * @param domain Optional domain parameter
+     * @param domain Optional domain parameter (kept for potential logging/future use)
      */
-    private fun retrieveLinkDetails(linkId: String, domainType: String? = null, domain: String? = null) {
-        Log.d(TAG, "retrieveLinkDetails. linkId: $linkId, domainType: $domainType, domain: $domain")
-        Thread.currentThread().stackTrace.forEach {
-            Log.d("StackTrace", it.toString())
-        }
+    private fun retrieveLinkDetails(linkId: String, domain: String?) {
+        Log.d(TAG, "Attempting retrieveLinkDetails. linkId: $linkId, domain: $domain")
         backgroundExecutor.execute {
             val urlBuilder = StringBuilder("$API_HOST/links/$linkId")
 
-            // Add query parameters if they exist
-            if (!domainType.isNullOrEmpty() || !domain.isNullOrEmpty()) {
-                urlBuilder.append("?")
-                var hasParameters = false
-                
-                if (!domainType.isNullOrEmpty()) {
-                    urlBuilder.append("domain_type=").append(domainType)
-                    hasParameters = true
-                }
-                
-                if (!domain.isNullOrEmpty()) {
-                    if (hasParameters) {
-                        urlBuilder.append("&")
-                    }
-                    urlBuilder.append("domain=").append(domain)
-                }
+            // Add domain query parameter if it exists
+            if (!domain.isNullOrEmpty()) {
+                urlBuilder.append("?domain=").append(domain)
             }
             
             val finalUrl = urlBuilder.toString()
@@ -402,7 +377,6 @@ class LinkLab private constructor(private val applicationContext: Context) {
                 // The referrer string is usually URL encoded, so we need to parse it
                 val params = referrerUrl.split("&")
                 var linkLabId: String? = null
-                var domainType: String? = null
                 var domain: String? = null
                 
                 // Look for the linklab parameters
@@ -411,22 +385,16 @@ class LinkLab private constructor(private val applicationContext: Context) {
                     if (keyValue.size == 2) {
                         when (keyValue[0]) {
                             "linklab_id" -> linkLabId = keyValue[1]
-                            "domain_type" -> domainType = keyValue[1]
                             "domain" -> domain = keyValue[1]
                         }
                     }
                 }
                 
-                // If domainType is not provided but we have a domain, determine it
-                if (domainType.isNullOrEmpty() && !domain.isNullOrEmpty()) {
-                    domainType = if (domain == REDIRECT_HOST) "rootDomain" else "subDomain"
-                }
-                
                 // If we found a linklab_id, retrieve the link details
                 if (!linkLabId.isNullOrEmpty()) {
                     Log.d(TAG, "Found linklab_id in install referrer: $linkLabId")
-                    Log.d(TAG, "Domain type: $domainType, Domain: $domain")
-                    retrieveLinkDetails(linkLabId, domainType, domain)
+                    Log.d(TAG, "Domain: $domain")
+                    retrieveLinkDetails(linkLabId, domain)
                 }
             }
         } catch (e: Exception) {
