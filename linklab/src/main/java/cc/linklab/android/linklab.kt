@@ -25,6 +25,16 @@ import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
 /**
+ * Configuration class for LinkLab SDK.
+ */
+class LinkLabConfig(
+    val customDomains: List<String> = listOf(),
+    val debugLoggingEnabled: Boolean = false,
+    val networkTimeout: Double = 30.0,
+    val networkRetryCount: Int = 3
+)
+
+/**
  * LinkLab is a library for handling dynamic links for Android applications.
  * It can retrieve a full link from a short link, either automatically from an Intent
  * or programmatically by providing a short link.
@@ -36,7 +46,8 @@ class LinkLab private constructor(private val applicationContext: Context) {
     private val listeners = mutableListOf<LinkLabListener>()
     private var referrerClient: InstallReferrerClient? = null
     private val preferences: SharedPreferences = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
+    
+    private var config: LinkLabConfig = LinkLabConfig()
     private var checkedInstallReferrer = preferences.getBoolean(KEY_CHECKED_INSTALL_REFERRER, false)
 
     /**
@@ -71,7 +82,9 @@ class LinkLab private constructor(private val applicationContext: Context) {
         val packageName: String?,
         val bundleId: String?,
         val appStoreId: String?,
-        val domain: String
+        val domain: String,
+        val domainType: String = "custom",
+        val parameters: Map<String, String>? = null
     ) {
         companion object {
             private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").apply {
@@ -99,6 +112,20 @@ class LinkLab private constructor(private val applicationContext: Context) {
                     }
                 } else 0L
 
+                // Parse parameters if they exist
+                val params = if (json.has("parameters")) {
+                    try {
+                        val paramsObj = json.getJSONObject("parameters")
+                        val paramMap = mutableMapOf<String, String>()
+                        paramsObj.keys().forEach { key ->
+                            paramMap[key] = paramsObj.optString(key, "")
+                        }
+                        paramMap
+                    } catch (e: Exception) {
+                        null
+                    }
+                } else null
+
                 return LinkData(
                     id = json.getString("id"),
                     fullLink = json.getString("fullLink"),
@@ -108,7 +135,9 @@ class LinkLab private constructor(private val applicationContext: Context) {
                     packageName = if (json.has("packageName")) json.optString("packageName", "") else null,
                     bundleId = if (json.has("bundleId")) json.optString("bundleId", "") else null,
                     appStoreId = if (json.has("appStoreId")) json.optString("appStoreId", "") else null,
-                    domain = json.optString("domain", "")
+                    domain = json.optString("domain", ""),
+                    domainType = json.optString("domainType", "custom"),
+                    parameters = params
                 )
             }
         }
@@ -116,9 +145,18 @@ class LinkLab private constructor(private val applicationContext: Context) {
     /**
      * Init LinkLab
      *
+     * @param config Configuration for the LinkLab SDK (optional)
      * @return This LinkLab instance for chaining
      */
-    fun init(): LinkLab {
+    fun init(config: LinkLabConfig = LinkLabConfig()): LinkLab {
+        // Set the configuration
+        this.config = config
+        
+        // Log the configuration
+        if (config.debugLoggingEnabled) {
+            Log.d(TAG, "Initializing LinkLab with config: customDomains=${config.customDomains}")
+        }
+        
         // Check for install referrer if this is the first initialization
         if (!checkedInstallReferrer) {
             checkInstallReferrer()
@@ -165,7 +203,28 @@ class LinkLab private constructor(private val applicationContext: Context) {
         val uri = intent.data ?: return false
         val host = uri.host ?: return false
 
-        return host == REDIRECT_HOST || host.endsWith(".$REDIRECT_HOST")
+        // Check against the default domain
+        if (host == REDIRECT_HOST || host.endsWith(".$REDIRECT_HOST")) {
+            if (config.debugLoggingEnabled) {
+                Log.d(TAG, "Link matched default domain: $host")
+            }
+            return true
+        }
+        
+        // Check against custom domains
+        for (domain in config.customDomains) {
+            if (host == domain || host.endsWith(".$domain")) {
+                if (config.debugLoggingEnabled) {
+                    Log.d(TAG, "Link matched custom domain: $host (from config: $domain)")
+                }
+                return true
+            }
+        }
+        
+        if (config.debugLoggingEnabled) {
+            Log.d(TAG, "Link did not match any domains: $host")
+        }
+        return false
     }
 
     /**
@@ -177,6 +236,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
      */
     fun processDynamicLink(intent: Intent?): Boolean {
         if (!isLinkLabLink(intent)) {
+            if (config.debugLoggingEnabled) {
+                val uri = intent?.data
+                Log.d(TAG, "Not a LinkLab link: ${uri?.toString() ?: "null"}")
+            }
             return false
         }
 
@@ -187,6 +250,11 @@ class LinkLab private constructor(private val applicationContext: Context) {
         if (linkId.isNullOrEmpty()) {
             notifyError(IllegalArgumentException("Invalid dynamic link: missing link ID"))
             return false
+        }
+
+        if (config.debugLoggingEnabled) {
+            Log.d(TAG, "Processing dynamic link: ${uri.toString()}")
+            Log.d(TAG, "Link ID: $linkId, Domain: $domain, Query: ${uri.query}")
         }
 
         retrieveLinkDetails(linkId, domain)
@@ -201,8 +269,22 @@ class LinkLab private constructor(private val applicationContext: Context) {
      */
     fun getDynamicLink(shortLinkUri: Uri) {
         val domain = shortLinkUri.host
-        if (domain == null || (domain != REDIRECT_HOST && !domain.endsWith(".$REDIRECT_HOST"))) {
-            notifyError(IllegalArgumentException("Invalid dynamic link: not a LinkLab domain"))
+        if (domain == null) {
+            notifyError(IllegalArgumentException("Invalid dynamic link: missing domain"))
+            return
+        }
+        
+        // Check if it's a valid LinkLab domain (default or custom)
+        val isDefaultDomain = domain == REDIRECT_HOST || domain.endsWith(".$REDIRECT_HOST")
+        val isCustomDomain = config.customDomains.any { 
+            domain == it || domain.endsWith(".$it") 
+        }
+        
+        if (!isDefaultDomain && !isCustomDomain) {
+            if (config.debugLoggingEnabled) {
+                Log.d(TAG, "Invalid dynamic link domain: $domain is not in customDomains=${config.customDomains}")
+            }
+            notifyError(IllegalArgumentException("Invalid dynamic link: not a recognized domain"))
             return
         }
 
@@ -282,9 +364,41 @@ class LinkLab private constructor(private val applicationContext: Context) {
      * @param data The link data
      */
     private fun notifySuccess(fullLink: Uri, data: LinkData) {
+        // Extract query parameters from the full link URL
+        val queryParams = mutableMapOf<String, String>()
+        if (fullLink.query != null) {
+            val query = fullLink.query ?: ""
+            val pairs = query.split("&")
+            for (pair in pairs) {
+                val idx = pair.indexOf("=")
+                if (idx > 0) {
+                    val key = pair.substring(0, idx)
+                    val value = pair.substring(idx + 1)
+                    queryParams[key] = value
+                }
+            }
+        }
+        
+        // Create a new LinkData instance with the query parameters
+        val dataWithParams = if (queryParams.isNotEmpty()) {
+            // Combine with existing parameters if any
+            val combinedParams = if (data.parameters != null) {
+                val combined = data.parameters.toMutableMap()
+                combined.putAll(queryParams)
+                combined
+            } else {
+                queryParams
+            }
+            
+            // Create new data object with parameters
+            data.copy(parameters = combinedParams)
+        } else {
+            data
+        }
+        
         mainHandler.post {
             listeners.forEach { listener ->
-                listener.onDynamicLinkRetrieved(fullLink, data)
+                listener.onDynamicLinkRetrieved(fullLink, dataWithParams)
             }
         }
     }

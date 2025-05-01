@@ -34,9 +34,14 @@ class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
             updateReferrerTextView("Checking install referrer...")
             updateLinklabTextView("Waiting for LinkLab data...")
 
-            // Initialize LinkLab - empty API key is acceptable
+            // Initialize LinkLab with configuration
+            val config = LinkLab.LinkLabConfig(
+                customDomains = listOf("app.potje.tech", "demo.linklab.cc"),
+                debugLoggingEnabled = true
+            )
+            
             LinkLab.getInstance(applicationContext)
-                .init()
+                .init(config)
                 .addListener(this)
 
             // Process any dynamic links that launched the app
@@ -283,10 +288,18 @@ class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
         
         Log.d(TAG, "Dynamic link retrieved: $fullLink")
         Log.d(TAG, "Link data details: id=${data.id}, domain=${data.domain}")
+        Log.d(TAG, "Parameters: ${data.parameters}")
 
         try {
+            // Build parameter display string
+            val paramsDisplay = if (data.parameters != null && data.parameters.isNotEmpty()) {
+                "\\n\\nParameters: ${data.parameters.entries.joinToString(", ") { "${it.key}=${it.value}" }}"
+            } else {
+                "\\n\\nNo parameters"
+            }
+            
             // Update UI first before doing any processing
-            updateLinklabTextView("LinkLab link: $fullLink\\n\\nData: id=${data.id}, package=${data.packageName}")
+            updateLinklabTextView("LinkLab link: $fullLink\\n\\nData: id=${data.id}, domain=${data.domain}, type=${data.domainType}$paramsDisplay")
 
             // Show toast with delay to avoid UI thread congestion
             android.os.Handler(mainLooper).postDelayed({
@@ -366,6 +379,35 @@ class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
         // Example of handling different types of links
         try {
             val path = fullLink.path ?: ""
+            
+            // Log parameters from both URL and LinkData
+            val queryParams = fullLink.queryParameterNames.associate { it to (fullLink.getQueryParameter(it) ?: "") }
+            val allParams = mutableMapOf<String, String>()
+            
+            // Add URL query parameters
+            allParams.putAll(queryParams)
+            
+            // Add LinkData parameters if available
+            if (data.parameters != null) {
+                allParams.putAll(data.parameters)
+            }
+            
+            // Log complete parameter set for debugging
+            if (allParams.isNotEmpty()) {
+                Log.d(TAG, "All parameters for link handling: $allParams")
+            } else {
+                Log.d(TAG, "No parameters for link handling")
+            }
+            
+            // Get campaign tracking parameters if present
+            val campaign = allParams["utm_campaign"]
+            val source = allParams["utm_source"]
+            val medium = allParams["utm_medium"]
+            
+            if (campaign != null || source != null || medium != null) {
+                Log.d(TAG, "Campaign tracking: campaign=$campaign, source=$source, medium=$medium")
+                // Track this information in your analytics system if needed
+            }
 
             when {
                 path.startsWith("/product/") -> {
