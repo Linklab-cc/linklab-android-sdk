@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.util.Log
 import androidx.core.content.edit
 import androidx.core.net.toUri
@@ -481,18 +482,26 @@ class LinkLab private constructor(private val applicationContext: Context) {
             Log.d(TAG, "No referrer details available")
             return
         }
-        
+
         try {
-            val referrerUrl = referrerDetails.installReferrer
-            Log.d(TAG, "Install referrer: $referrerUrl")
-            
-            // Parse the referrer URL to extract parameters
-            if (referrerUrl.isNotEmpty()) {
-                // The referrer string is usually URL encoded, so we need to parse it
-                val params = referrerUrl.split("&")
+            val encodedReferrerUrl = referrerDetails.installReferrer
+            Log.d(TAG, "Encoded install referrer: $encodedReferrerUrl")
+
+            if (encodedReferrerUrl.isNotEmpty()) {
+                // Decode the Base64 encoded referrer string
+                val decodedReferrerUrl = try {
+                    String(Base64.decode(encodedReferrerUrl, Base64.DEFAULT), Charsets.UTF_8)
+                } catch (e: IllegalArgumentException) {
+                    Log.e(TAG, "Failed to decode base64 referrer string", e)
+                    return
+                }
+                Log.d(TAG, "Decoded install referrer: $decodedReferrerUrl")
+
+                // Parse the decoded referrer URL to extract parameters
+                val params = decodedReferrerUrl.split("&")
                 var linkLabId: String? = null
                 var domain: String? = null
-                
+
                 // Look for the linklab parameters
                 for (param in params) {
                     val keyValue = param.split("=")
@@ -503,7 +512,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
                         }
                     }
                 }
-                
+
                 // If we found a linklab_id, retrieve the link details
                 if (!linkLabId.isNullOrEmpty()) {
                     Log.d(TAG, "Found linklab_id in install referrer: $linkLabId")
