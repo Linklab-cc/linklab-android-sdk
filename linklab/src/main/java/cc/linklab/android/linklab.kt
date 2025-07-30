@@ -46,8 +46,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = mutableListOf<LinkLabListener>()
     private var referrerClient: InstallReferrerClient? = null
-    private val preferences: SharedPreferences = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    
+    private val preferences: SharedPreferences =
+        applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    private val processedLinkIds = mutableSetOf<String>()
     private var config: LinkLabConfig = LinkLabConfig()
     private var checkedInstallReferrer = preferences.getBoolean(KEY_CHECKED_INSTALL_REFERRER, false)
 
@@ -133,9 +135,15 @@ class LinkLab private constructor(private val applicationContext: Context) {
                     createdAt = createdAt,
                     updatedAt = updatedAt,
                     userId = json.getString("userId"),
-                    packageName = if (json.has("packageName")) json.optString("packageName", "") else null,
+                    packageName = if (json.has("packageName")) json.optString(
+                        "packageName",
+                        ""
+                    ) else null,
                     bundleId = if (json.has("bundleId")) json.optString("bundleId", "") else null,
-                    appStoreId = if (json.has("appStoreId")) json.optString("appStoreId", "") else null,
+                    appStoreId = if (json.has("appStoreId")) json.optString(
+                        "appStoreId",
+                        ""
+                    ) else null,
                     domain = json.optString("domain", ""),
                     domainType = json.optString("domainType", "custom"),
                     parameters = params
@@ -143,6 +151,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
             }
         }
     }
+
     /**
      * Init LinkLab
      *
@@ -152,17 +161,17 @@ class LinkLab private constructor(private val applicationContext: Context) {
     fun init(config: LinkLabConfig = LinkLabConfig()): LinkLab {
         // Set the configuration
         this.config = config
-        
+
         // Log the configuration
         if (config.debugLoggingEnabled) {
             Log.d(TAG, "Initializing LinkLab with config: customDomains=${config.customDomains}")
         }
-        
+
         // Check for install referrer if this is the first initialization
         if (!checkedInstallReferrer) {
             checkInstallReferrer()
         }
-        
+
         return this
     }
 
@@ -211,7 +220,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
             }
             return true
         }
-        
+
         // Check against custom domains
         for (domain in config.customDomains) {
             if (host == domain || host.endsWith(".$domain")) {
@@ -221,7 +230,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
                 return true
             }
         }
-        
+
         if (config.debugLoggingEnabled) {
             Log.d(TAG, "Link did not match any domains: $host")
         }
@@ -274,16 +283,19 @@ class LinkLab private constructor(private val applicationContext: Context) {
             notifyError(IllegalArgumentException("Invalid dynamic link: missing domain"))
             return
         }
-        
+
         // Check if it's a valid LinkLab domain (default or custom)
         val isDefaultDomain = domain == REDIRECT_HOST || domain.endsWith(".$REDIRECT_HOST")
-        val isCustomDomain = config.customDomains.any { 
-            domain == it || domain.endsWith(".$it") 
+        val isCustomDomain = config.customDomains.any {
+            domain == it || domain.endsWith(".$it")
         }
-        
+
         if (!isDefaultDomain && !isCustomDomain) {
             if (config.debugLoggingEnabled) {
-                Log.d(TAG, "Invalid dynamic link domain: $domain is not in customDomains=${config.customDomains}")
+                Log.d(
+                    TAG,
+                    "Invalid dynamic link domain: $domain is not in customDomains=${config.customDomains}"
+                )
             }
             notifyError(IllegalArgumentException("Invalid dynamic link: not a recognized domain"))
             return
@@ -305,6 +317,14 @@ class LinkLab private constructor(private val applicationContext: Context) {
      * @param domain Optional domain parameter (kept for potential logging/future use)
      */
     private fun retrieveLinkDetails(linkId: String, domain: String?) {
+        // 1. Check if this link ID has already been processed.
+        if (processedLinkIds.contains(linkId)) {
+            if (config.debugLoggingEnabled) {
+                Log.d(TAG, "Link ID $linkId has already been processed. Skipping.")
+            }
+            return
+        }
+
         Log.d(TAG, "Attempting retrieveLinkDetails. linkId: $linkId, domain: $domain")
         backgroundExecutor.execute {
             val urlBuilder = StringBuilder("$API_HOST/links/$linkId")
@@ -313,10 +333,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
             if (!domain.isNullOrEmpty()) {
                 urlBuilder.append("?domain=").append(domain)
             }
-            
+
             val finalUrl = urlBuilder.toString()
             Log.d(TAG, "Requesting link details from: $finalUrl")
-            
+
             val requestBuilder = Request.Builder()
                 .url(finalUrl)
                 .get()
@@ -346,6 +366,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
                         val json = JSONObject(responseBody)
                         val linkData = LinkData.fromJson(json)
                         val fullLink = linkData.fullLink.toUri()
+
+                        // 2. Add the ID to the set of processed links before notifying listeners.
+                        processedLinkIds.add(linkData.id)
+
                         Log.d(TAG, "Link details retrieved successfully $linkData")
                         notifySuccess(fullLink, linkData)
                     } catch (e: Exception) {
@@ -379,7 +403,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
                 }
             }
         }
-        
+
         // Create a new LinkData instance with the query parameters
         val dataWithParams = if (queryParams.isNotEmpty()) {
             // Combine with existing parameters if any
@@ -390,13 +414,13 @@ class LinkLab private constructor(private val applicationContext: Context) {
             } else {
                 queryParams
             }
-            
+
             // Create new data object with parameters
             data.copy(parameters = combinedParams)
         } else {
             data
         }
-        
+
         mainHandler.post {
             listeners.forEach { listener ->
                 listener.onDynamicLinkRetrieved(fullLink, dataWithParams)
@@ -425,11 +449,11 @@ class LinkLab private constructor(private val applicationContext: Context) {
     private fun checkInstallReferrer() {
         checkedInstallReferrer = true
         preferences.edit() { putBoolean(KEY_CHECKED_INSTALL_REFERRER, true) }
-        
+
         try {
             // Initialize the Install Referrer client
             referrerClient = InstallReferrerClient.newBuilder(applicationContext).build()
-            
+
             // Set up the connection to Google Play
             referrerClient?.startConnection(object : InstallReferrerStateListener {
                 override fun onInstallReferrerSetupFinished(responseCode: Int) {
@@ -446,19 +470,22 @@ class LinkLab private constructor(private val applicationContext: Context) {
                                 referrerClient?.endConnection()
                             }
                         }
-                        
+
                         InstallReferrerClient.InstallReferrerResponse.FEATURE_NOT_SUPPORTED -> {
                             Log.w(TAG, "Install Referrer not supported on this device")
                             referrerClient?.endConnection()
                         }
-                        
+
                         InstallReferrerClient.InstallReferrerResponse.SERVICE_UNAVAILABLE -> {
                             Log.w(TAG, "Install Referrer service unavailable")
                             referrerClient?.endConnection()
                         }
-                        
+
                         else -> {
-                            Log.w(TAG, "Install Referrer connection failed with code: $responseCode")
+                            Log.w(
+                                TAG,
+                                "Install Referrer connection failed with code: $responseCode"
+                            )
                             referrerClient?.endConnection()
                         }
                     }
