@@ -1,6 +1,6 @@
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
     alias(libs.plugins.compose.compiler)
 }
 
@@ -61,7 +61,7 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.8"
+        kotlinCompilerExtensionVersion = libs.versions.composeCompilerExtension.get()
     }
 
     packaging {
@@ -77,48 +77,44 @@ dependencies {
     }
 
     // Core Android dependencies
-    implementation(libs.androidx.core.ktx.v1120)
-    implementation(libs.androidx.lifecycle.runtime.ktx.v270)
-    implementation(libs.androidx.activity.compose.v182)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.activity.compose)
 
     // Compose BOM
     implementation(platform(libs.androidx.compose.bom))
     
     // Material 3
-    implementation("androidx.compose.material3:material3")
+    implementation(libs.androidx.compose.material3)
 
     // Foundation (Border, Background, Box, Image, Scroll, shapes, animations, etc.)
-    implementation("androidx.compose.foundation:foundation")
+    implementation(libs.androidx.compose.foundation)
 
     // UI (Core Compose UI elements)
-    implementation("androidx.compose.ui:ui")
+    implementation(libs.androidx.compose.ui)
 
     // Optional - Add full set of material icons
-    implementation("androidx.compose.material:material-icons-core")
-    implementation("androidx.compose.material:material-icons-extended")
+    implementation(libs.androidx.compose.material.icons.core)
+    implementation(libs.androidx.compose.material.icons.extended)
 
     // UI tooling (for previews, etc)
-    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.installreferrer)
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
-
-    // Optional - Integration with activities
-    implementation("androidx.activity:activity-compose:1.8.2")
+    debugImplementation(libs.androidx.compose.ui.tooling)
 
     // Optional - Integration with ViewModels
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
 
     // Standard components
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    implementation("com.google.android.material:material:1.11.0")
+    implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.constraintlayout)
+    implementation(libs.google.material)
 
     // Testing
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

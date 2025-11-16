@@ -9,6 +9,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
 import cc.linklab.android.LinkLab
+import cc.linklab.android.LinkLabConfig
 import com.android.installreferrer.api.InstallReferrerClient
 import com.android.installreferrer.api.InstallReferrerStateListener
 import com.android.installreferrer.api.ReferrerDetails
@@ -35,7 +36,7 @@ class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
             updateLinklabTextView("Waiting for LinkLab data...")
 
             // Initialize LinkLab with configuration
-            val config = LinkLab.LinkLabConfig(
+            val config = LinkLabConfig(
                 customDomains = listOf("app.potje.tech", "demo.linklab.cc"),
                 debugLoggingEnabled = true
             )
@@ -292,11 +293,12 @@ class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
 
         try {
             // Build parameter display string
-            val paramsDisplay = if (data.parameters != null && data.parameters.isNotEmpty()) {
-                "\\n\\nParameters: ${data.parameters.entries.joinToString(", ") { "${it.key}=${it.value}" }}"
-            } else {
-                "\\n\\nNo parameters"
-            }
+            val paramsDisplay = data.parameters
+                ?.takeIf { it.isNotEmpty() }
+                ?.entries
+                ?.joinToString(", ") { "${it.key}=${it.value}" }
+                ?.let { "\n\nParameters: $it" }
+                ?: "\n\nNo parameters"
             
             // Update UI first before doing any processing
             updateLinklabTextView("LinkLab link: $fullLink\\n\\nData: id=${data.id}, domain=${data.domain}, type=${data.domainType}$paramsDisplay")
@@ -388,9 +390,7 @@ class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
             allParams.putAll(queryParams)
             
             // Add LinkData parameters if available
-            if (data.parameters != null) {
-                allParams.putAll(data.parameters)
-            }
+            data.parameters?.let { allParams.putAll(it) }
             
             // Log complete parameter set for debugging
             if (allParams.isNotEmpty()) {
