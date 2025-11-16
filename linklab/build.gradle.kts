@@ -107,11 +107,83 @@ afterEvaluate {
     }
 }
 
-// Tasks for publishing to Maven Central
-tasks.register("publishLinkLabToSonatype") {
-    dependsOn("publishReleasePublicationToSonatypeRepository")
+// Add local repository for bundle creation
+afterEvaluate {
+    publishing {
+        repositories {
+            maven {
+                name = "LocalBundle"
+                url = uri("${project.layout.buildDirectory.get()}/maven-bundle")
+            }
+        }
+    }
+}
+
+// Task to publish to local repository for bundle creation
+tasks.register("publishToLocalBundle") {
+    group = "publishing"
+    description = "Publishes all artifacts to a local directory for bundle creation"
+    dependsOn("publishReleasePublicationToLocalBundleRepository")
     doLast {
-        println("Published to Sonatype repository")
+        println("Published to: ${project.layout.buildDirectory.get()}/maven-bundle")
+    }
+}
+
+// Task to create deployment bundle
+tasks.register<Zip>("createDeploymentBundle") {
+    group = "publishing"
+    description = "Creates a deployment bundle for Maven Central"
+    dependsOn("publishToLocalBundle")
+    
+    from("${project.layout.buildDirectory.get()}/maven-bundle")
+    archiveFileName.set("deployment-bundle.zip")
+    destinationDirectory.set(project.layout.buildDirectory.get().asFile)
+    
+    doLast {
+        println("Bundle created at: ${project.layout.buildDirectory.get()}/deployment-bundle.zip")
+    }
+}
+
+// Task to automatically publish to Central Portal
+tasks.register("publishToCentralPortal") {
+    group = "publishing"
+    description = "Automatically publishes to Maven Central via Central Portal API"
+    dependsOn("createDeploymentBundle")
+    
+    doLast {
+        val username = project.findProperty("ossrhUsername")?.toString() 
+            ?: System.getenv("OSSRH_USERNAME") 
+            ?: error("ossrhUsername not found in gradle.properties or OSSRH_USERNAME env var")
+        val password = project.findProperty("ossrhPassword")?.toString() 
+            ?: System.getenv("OSSRH_PASSWORD") 
+            ?: error("ossrhPassword not found in gradle.properties or OSSRH_PASSWORD env var")
+        
+        val bundleFile = file("${project.layout.buildDirectory.get()}/deployment-bundle.zip")
+        if (!bundleFile.exists()) {
+            error("Bundle file not found: ${bundleFile.absolutePath}")
+        }
+        
+        println("📦 Uploading bundle to Central Portal...")
+        
+        // Upload the bundle using curl
+        val uploadResult = exec {
+            commandLine(
+                "curl", "-X", "POST",
+                "https://central.sonatype.com/api/v1/publisher/upload",
+                "-H", "Authorization: Bearer $username:$password",
+                "-F", "bundle=@${bundleFile.absolutePath}",
+                "-w", "\\n%{http_code}"
+            )
+            isIgnoreExitValue = true
+        }
+        
+        if (uploadResult.exitValue == 0) {
+            println("✅ Successfully uploaded to Central Portal!")
+            println("🔍 Check status at: https://central.sonatype.com/publishing")
+            println("⏱  Artifacts will sync to Maven Central in 15-30 minutes")
+        } else {
+            error("❌ Failed to upload bundle. Check your credentials and try again.")
+        }
     }
 }
 

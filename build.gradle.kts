@@ -12,10 +12,11 @@ tasks.register("clean", Delete::class) {
 nexusPublishing {
     repositories {
         sonatype {
-            nexusUrl.set(uri("https://central.sonatype.com/repository/maven-releases/"))
-            snapshotRepositoryUrl.set(uri("https://central.sonatype.com/repository/maven-snapshots/"))
+            // Sonatype OSSRH endpoints
+            nexusUrl.set(uri("https://s01.oss.sonatype.org/service/local/"))
+            snapshotRepositoryUrl.set(uri("https://s01.oss.sonatype.org/content/repositories/snapshots/"))
             
-            // Credentials should be provided via gradle.properties or environment variables
+            // Credentials from gradle.properties or environment variables
             username.set(System.getenv("OSSRH_USERNAME") ?: findProperty("ossrhUsername")?.toString() ?: "")
             password.set(System.getenv("OSSRH_PASSWORD") ?: findProperty("ossrhPassword")?.toString() ?: "")
         }
@@ -23,6 +24,18 @@ nexusPublishing {
 }
 
 // Convenience tasks for publishing
+
+// New Central Portal (automated)
+tasks.register("publishRelease") {
+    group = "publishing"
+    description = "Build, sign, and publish release to Maven Central (New Portal)"
+    dependsOn("clean", ":linklab:publishToCentralPortal")
+    doLast {
+        println("✅ Publishing complete!")
+    }
+}
+
+// Legacy OSSRH tasks
 tasks.register("publishToMavenCentral") {
     dependsOn(":linklab:publishLinkLabToSonatype")
     doLast {
