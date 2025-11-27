@@ -25,11 +25,37 @@ nexusPublishing {
 
 // Convenience tasks for publishing
 
-// New Central Portal (automated)
+// For snapshots (via Central Portal bundle upload)
+tasks.register("publishSnapshot") {
+    group = "publishing"
+    description = "Build, sign, and publish SNAPSHOT to Maven Central via Central Portal"
+    dependsOn("clean", ":linklab:publishToCentralPortal")
+    doFirst {
+        val v = findProperty("version")?.toString() ?: ""
+        if (!v.endsWith("-SNAPSHOT")) {
+            throw GradleException("publishSnapshot is for SNAPSHOT versions only. Current version: $v")
+        }
+    }
+    doLast {
+        val version = findProperty("version")?.toString() ?: "unknown"
+        println("✅ Snapshot publishing complete!")
+        println("📦 Snapshot cc.linklab:android:$version uploaded to Central Portal")
+        println("🔍 Check status at: https://central.sonatype.com/publishing")
+        println("⏱  Will be available shortly at: https://central.sonatype.com/artifact/cc.linklab/android")
+    }
+}
+
+// New Central Portal (automated, for releases)
 tasks.register("publishRelease") {
     group = "publishing"
     description = "Build, sign, and publish release to Maven Central (New Portal)"
     dependsOn("clean", ":linklab:publishToCentralPortal")
+    doFirst {
+        val v = findProperty("version")?.toString() ?: ""
+        if (v.endsWith("SNAPSHOT")) {
+            throw GradleException("publishRelease is for non-SNAPSHOT versions. For snapshots use: ./gradlew publishSnapshot")
+        }
+    }
     doLast {
         println("✅ Publishing complete!")
     }

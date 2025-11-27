@@ -1,3 +1,5 @@
+import java.io.ByteArrayOutputStream
+
 // build.gradle.kts for the library module
 plugins {
     id("com.android.library")
@@ -109,7 +111,7 @@ afterEvaluate {
     }
 }
 
-// Add local repository for bundle creation
+// Add repositories for publishing
 afterEvaluate {
     publishing {
         repositories {
@@ -117,6 +119,21 @@ afterEvaluate {
                 name = "LocalBundle"
                 url = uri("${project.layout.buildDirectory.get()}/maven-bundle")
             }
+            // Note: We use Central Portal bundle upload API for both releases and snapshots
+            // No need for direct repository upload anymore
+        }
+    }
+}
+
+// Task to clean the bundle directory
+tasks.register("cleanBundleDir") {
+    group = "publishing"
+    description = "Cleans the maven-bundle directory"
+    doLast {
+        val bundleDir = file("${project.layout.buildDirectory.get()}/maven-bundle")
+        if (bundleDir.exists()) {
+            bundleDir.deleteRecursively()
+            logger.lifecycle("Cleaned bundle directory: ${bundleDir}")
         }
     }
 }
@@ -125,7 +142,7 @@ afterEvaluate {
 tasks.register("publishToLocalBundle") {
     group = "publishing"
     description = "Publishes all artifacts to a local directory for bundle creation"
-    dependsOn("publishReleasePublicationToLocalBundleRepository")
+    dependsOn("cleanBundleDir", "publishReleasePublicationToLocalBundleRepository")
     doLast {
         println("Published to: ${project.layout.buildDirectory.get()}/maven-bundle")
     }
@@ -167,31 +184,58 @@ tasks.register("publishToCentralPortal") {
         
         println("📦 Uploading bundle to Central Portal...")
         
-        // Upload the bundle using curl
-        val uploadResult = exec {
+        // Upload the bundle using curl with Basic auth and capture HTTP code
+        val stdout = ByteArrayOutputStream()
+        val stderr = ByteArrayOutputStream()
+        exec {
             commandLine(
-                "curl", "-X", "POST",
-                "https://central.sonatype.com/api/v1/publisher/upload",
-                "-H", "Authorization: Bearer $username:$password",
+                "curl",
+                "-sS",
+                "-u", "$username:$password",
+                "-X", "POST",
+                "-H", "Accept: application/json",
                 "-F", "bundle=@${bundleFile.absolutePath}",
-                "-w", "\\n%{http_code}"
+                "-w", "\\n%{http_code}",
+                "https://central.sonatype.com/api/v1/publisher/upload"
             )
+            standardOutput = stdout
+            errorOutput = stderr
             isIgnoreExitValue = true
         }
-        
-        if (uploadResult.exitValue == 0) {
-            println("✅ Successfully uploaded to Central Portal!")
-            println("🔍 Check status at: https://central.sonatype.com/publishing")
-            println("⏱  Artifacts will sync to Maven Central in 15-30 minutes")
+        val output = stdout.toString().trim()
+        val lines = output.lines()
+        val httpCode = lines.lastOrNull()?.toIntOrNull() ?: -1
+        val body = lines.dropLast(1).joinToString("\n")
+        if (httpCode in listOf(200, 201, 202)) {
+            logger.lifecycle("✅ Successfully uploaded to Central Portal! ($httpCode)")
+            if (body.isNotBlank()) {
+                logger.lifecycle(body)
+            }
+            logger.lifecycle("🔍 Check status at: https://central.sonatype.com/publishing")
+            logger.lifecycle("⏱  Artifacts will sync to Maven Central in 15-30 minutes")
         } else {
-            error("❌ Failed to upload bundle. Check your credentials and try again.")
+            val errOut = stderr.toString()
+            error("❌ Upload failed (HTTP $httpCode).\nResponse: $body\n$errOut")
         }
+    }
+}
+
+// Note: Snapshots are published via Central Portal bundle upload (publishToCentralPortal task)
+// The CentralSnapshot repository is no longer needed
+
+// Task for publishing to OSSRH via Nexus plugin (alternative method)
+tasks.register("publishLinkLabToSonatype") {
+    group = "publishing"
+    description = "Publishes to OSSRH via Nexus plugin (for snapshots)"
+    dependsOn("publishReleasePublicationToSonatypeRepository")
+    doLast {
+        logger.lifecycle("Published to Sonatype repository")
     }
 }
 
 tasks.register("releaseSonatypeRepository") {
     dependsOn(rootProject.tasks.named("closeAndReleaseSonatypeStagingRepository"))
     doLast {
-        println("Closed and released Sonatype staging repository")
+        logger.lifecycle("Closed and released Sonatype staging repository")
     }
 }
