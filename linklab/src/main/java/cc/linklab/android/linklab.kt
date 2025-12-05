@@ -27,6 +27,7 @@ import java.util.concurrent.Executors
 
 /**
  * Configuration class for LinkLab SDK.
+ * This holds settings like custom domains and debug mode.
  */
 class LinkLabConfig(
     val customDomains: List<String> = listOf(),
@@ -36,15 +37,22 @@ class LinkLabConfig(
 )
 
 /**
- * LinkLab is a library for handling dynamic links for Android applications.
- * It can retrieve a full link from a short link, either automatically from an Intent
- * or programmatically by providing a short link.
+ * LinkLab is a library for handling deep links for Android applications.
+ * It handles the logic of checking if a link belongs to the service or not.
  */
 class LinkLab private constructor(private val applicationContext: Context) {
+    // Tool for making network requests
     private val httpClient = OkHttpClient()
+
+    // Background worker to keep the main app smooth
     private val backgroundExecutor: Executor = Executors.newSingleThreadExecutor()
+
+    // Handler to send results back to the main screen (UI)
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // List of parts of the app listening for link results
     private val listeners = mutableListOf<LinkLabListener>()
+
     private var referrerClient: InstallReferrerClient? = null
     private val preferences: SharedPreferences =
         applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -54,41 +62,38 @@ class LinkLab private constructor(private val applicationContext: Context) {
     private var checkedInstallReferrer = preferences.getBoolean(KEY_CHECKED_INSTALL_REFERRER, false)
 
     /**
-     * Interface for callbacks when a dynamic link is processed.
+     * Interface for callbacks when a deep link is processed.
+     * This is how the app receives the result.
      */
     interface LinkLabListener {
         /**
-         * Called when a dynamic link has been successfully processed.
-         *
-         * @param fullLink The resolved full link (or raw link if unrecognized)
-         * @param data Additional data about the link
+         * Called when a link is processed.
+         * * @param fullLink The final URL (either resolved or the original one if unrecognized).
+         * @param data Object containing details about the link.
          */
         fun onDynamicLinkRetrieved(fullLink: Uri, data: LinkData)
 
         /**
-         * Called when there was an error processing a dynamic link.
-         * Note: With fail-open strategy, most errors will now result in onDynamicLinkRetrieved
-         * with an "unrecognized" LinkData object.
-         *
-         * @param exception The exception that occurred
+         * Called ONLY if a critical error occurs that cannot be handled by "Fail-open".
          */
         fun onError(exception: Exception)
     }
 
     /**
      * Container for link data.
+     * Describes the properties of a link.
      */
     data class LinkData(
-        val id: String?, // Changed to nullable
+        val id: String?,
         val fullLink: String,
-        val createdAt: Long?, // Changed to nullable
-        val updatedAt: Long?, // Changed to nullable
-        val userId: String?, // Changed to nullable
+        val createdAt: Long?,
+        val updatedAt: Long?,
+        val userId: String?,
         val packageName: String?,
         val bundleId: String?,
         val appStoreId: String?,
         val domain: String?,
-        val domainType: String, // Non-nullable
+        val domainType: String, // Type of domain (e.g., "custom", "default", or "unrecognized")
         val parameters: Map<String, String>? = null
     ) {
         companion object {
@@ -96,11 +101,13 @@ class LinkLab private constructor(private val applicationContext: Context) {
                 timeZone = TimeZone.getTimeZone("UTC")
             }
 
-            // Factory method for unrecognized links (Fail-open)
+            // --- FAIL-OPEN HELPER ---
+            // This creates a "safe" object when we don't know the link or the API fails.
+            // It allows the app to continue working with the original link.
             fun unrecognized(uri: Uri): LinkData {
                 return LinkData(
                     id = null,
-                    fullLink = uri.toString(),
+                    fullLink = uri.toString(), // We just return the original link
                     createdAt = null,
                     updatedAt = null,
                     userId = null,
@@ -108,7 +115,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
                     bundleId = null,
                     appStoreId = null,
                     domain = uri.host,
-                    domainType = "unrecognized",
+                    domainType = "unrecognized", // Tag it as unrecognized
                     parameters = null
                 )
             }
@@ -149,7 +156,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
                 } else null
 
                 return LinkData(
-                    id = json.optString("id"), // Use optString just in case
+                    id = json.optString("id"),
                     fullLink = json.getString("fullLink"),
                     createdAt = createdAt,
                     updatedAt = updatedAt,
@@ -167,20 +174,14 @@ class LinkLab private constructor(private val applicationContext: Context) {
 
     /**
      * Init LinkLab
-     *
-     * @param config Configuration for the LinkLab SDK (optional)
-     * @return This LinkLab instance for chaining
      */
     fun init(config: LinkLabConfig = LinkLabConfig()): LinkLab {
-        // Set the configuration
         this.config = config
 
-        // Log the configuration
         if (config.debugLoggingEnabled) {
             Log.d(TAG, "Initializing LinkLab with config: customDomains=${config.customDomains}")
         }
 
-        // Check for install referrer if this is the first initialization
         if (!checkedInstallReferrer) {
             checkInstallReferrer()
         }
@@ -202,6 +203,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
 
     /**
      * Check if an intent contains a LinkLab dynamic link.
+     * This checks if the link domain matches our service or custom domains.
      */
     fun isLinkLabLink(intent: Intent?): Boolean {
         if (intent?.data == null) {
@@ -226,45 +228,59 @@ class LinkLab private constructor(private val applicationContext: Context) {
     }
 
     /**
-     * Process a dynamic link from an intent.
+     * MAIN ENTRY POINT: Process a dynamic link from an intent.
+     * * Strategy:
+     * 1. If it IS a LinkLab link -> Fetch details from API.
+     * 2. If it is NOT a LinkLab link -> Return it immediately as "unrecognized".
+     * * This ensures the app always gets a result, even for external links.
      */
     fun processDynamicLink(intent: Intent?): Boolean {
-        // Even if validation fails, we might want to pass it through if it looks like a deep link,
-        // but traditionally we only check configured domains.
-        // If it's NOT a LinkLab link (by domain), we return false so the app handles it as a normal deep link.
-        if (!isLinkLabLink(intent)) {
-            if (config.debugLoggingEnabled) {
-                val uri = intent?.data
-                Log.d(TAG, "Not a LinkLab link: ${uri?.toString() ?: "null"}")
-            }
+        // Step 1: Get the link (URI) from the intent
+        val uri = intent?.data
+
+        // If no link exists, we can't do anything.
+        if (uri == null) {
             return false
         }
 
-        val uri = intent?.data ?: return false
+        // Step 2: Check if this link belongs to LinkLab or our Custom Domains
+        if (!isLinkLabLink(intent)) {
+            // --- FAIL-OPEN LOGIC ---
+            // The link exists, but it is NOT ours (e.g., google.com or another deep link).
+            // We should not ignore it. We must pass it back to the app so the app can handle it.
 
-        // Pass the URI to retrieval
+            if (config.debugLoggingEnabled) {
+                Log.d(TAG, "External link detected (not LinkLab): $uri. Passing through as unrecognized.")
+            }
+
+            // Create a wrapper object marked as "unrecognized" and send it to listeners
+            notifySuccess(uri, LinkData.unrecognized(uri))
+
+            // Return true to indicate we handled the intent successfully
+            return true
+        }
+
+        // Step 3: It IS a LinkLab link. Proceed to fetch details from the server.
         retrieveLinkDetails(uri)
         return true
     }
 
     /**
-     * Process a dynamic link directly from a URI.
+     * Process a dynamic link directly from a URI object (manual call).
      */
     fun getDynamicLink(shortLinkUri: Uri) {
         retrieveLinkDetails(shortLinkUri)
     }
 
     /**
-     * Retrieve a dynamic link's details from the API using a URI object.
-     * This method implements the "Fail-open" strategy.
-     *
-     * @param uri The full URI of the short link
+     * Retrieve a dynamic link's details from the API.
+     * Uses "Fail-open" strategy: if network fails, we act as if the link is unrecognized.
      */
     private fun retrieveLinkDetails(uri: Uri) {
         val linkId = uri.lastPathSegment
         val domain = uri.host
 
-        // 1. Validation: If no link ID or domain, fail open immediately
+        // Validation: If format is wrong, don't crash. Just return the link as is.
         if (linkId.isNullOrEmpty() || domain.isNullOrEmpty()) {
             if (config.debugLoggingEnabled) {
                 Log.d(TAG, "Invalid link format. Treating as unrecognized: $uri")
@@ -273,7 +289,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
             return
         }
 
-        // 2. Check cache
+        // Check cache to avoid duplicate processing
         if (processedLinkIds.contains(linkId)) {
             if (config.debugLoggingEnabled) {
                 Log.d(TAG, "Link ID $linkId has already been processed. Skipping.")
@@ -293,17 +309,19 @@ class LinkLab private constructor(private val applicationContext: Context) {
             val request = Request.Builder().url(finalUrl).get().build()
 
             httpClient.newCall(request).enqueue(object : Callback {
+                // Network Error (e.g., no internet)
                 override fun onFailure(call: Call, e: IOException) {
                     Log.d(TAG, "Network failed: ${e.message}. Failing open.")
-                    // FAIL OPEN: Return unrecognized
+                    // SAFETY: Return the original link so the app isn't blocked.
                     notifySuccess(uri, LinkData.unrecognized(uri))
                 }
 
+                // Server Response
                 override fun onResponse(call: Call, response: Response) {
-                    // Handle non-successful responses (404, 500, etc.)
+                    // Handle server errors (e.g., 404 Not Found, 500 Server Error)
                     if (!response.isSuccessful) {
                         Log.d(TAG, "API error: ${response.code}. Failing open.")
-                        // FAIL OPEN: Return unrecognized
+                        // SAFETY: Return the original link.
                         notifySuccess(uri, LinkData.unrecognized(uri))
                         return
                     }
@@ -316,18 +334,19 @@ class LinkLab private constructor(private val applicationContext: Context) {
                     }
 
                     try {
+                        // SUCCESS: Parse the JSON from the server
                         val json = JSONObject(responseBody)
                         val linkData = LinkData.fromJson(json)
                         val fullLink = linkData.fullLink.toUri()
 
-                        // Add to processed set only if valid ID exists
+                        // Mark as processed
                         linkData.id?.let { processedLinkIds.add(it) }
 
                         Log.d(TAG, "Link details retrieved successfully")
                         notifySuccess(fullLink, linkData)
                     } catch (e: Exception) {
                         Log.d(TAG, "Failed to parse link data: ${e.message}. Failing open.")
-                        // FAIL OPEN: Parsing failed, return unrecognized
+                        // SAFETY: If JSON is bad, return original link.
                         notifySuccess(uri, LinkData.unrecognized(uri))
                     }
                 }
@@ -336,9 +355,8 @@ class LinkLab private constructor(private val applicationContext: Context) {
     }
 
     /**
-     * Overload for Install Referrer (internal use).
-     * Install Referrer logic does not have a "Fail-open" to a deep link,
-     * because there is no user-facing deep link involved.
+     * Logic for Install Referrer (Internal Use).
+     * This tracks where the app install came from.
      */
     private fun retrieveLinkDetailsForReferrer(linkId: String, domain: String) {
         if (processedLinkIds.contains(linkId)) return
@@ -350,7 +368,6 @@ class LinkLab private constructor(private val applicationContext: Context) {
             httpClient.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     Log.e(TAG, "Referrer fetch failed", e)
-                    // Silent failure for referrer
                 }
 
                 override fun onResponse(call: Call, response: Response) {
@@ -372,6 +389,9 @@ class LinkLab private constructor(private val applicationContext: Context) {
         }
     }
 
+    /**
+     * Helper to send success result to the main thread (UI).
+     */
     private fun notifySuccess(fullLink: Uri, data: LinkData) {
         // Extract query parameters from the full link URL
         val queryParams = mutableMapOf<String, String>()
@@ -388,7 +408,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
             }
         }
 
-        // Create a new LinkData instance with the query parameters if needed
+        // Merge existing params with URL params
         val dataWithParams = if (queryParams.isNotEmpty()) {
             val combinedParams = if (data.parameters != null) {
                 val combined = data.parameters.toMutableMap()
@@ -402,6 +422,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
             data
         }
 
+        // Send to listeners on Main Thread
         mainHandler.post {
             listeners.forEach { listener ->
                 listener.onDynamicLinkRetrieved(fullLink, dataWithParams)
@@ -418,6 +439,9 @@ class LinkLab private constructor(private val applicationContext: Context) {
         }
     }
 
+    /**
+     * Setup Install Referrer Client.
+     */
     private fun checkInstallReferrer() {
         checkedInstallReferrer = true
         preferences.edit() { putBoolean(KEY_CHECKED_INSTALL_REFERRER, true) }
