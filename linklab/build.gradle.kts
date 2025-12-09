@@ -11,11 +11,11 @@ plugins {
 
 android {
     namespace = "cc.linklab.android"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
-        minSdk = 21
-        targetSdk = 35
+        minSdk = 27
+        targetSdk = 36
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")

@@ -68,10 +68,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
     interface LinkLabListener {
         /**
          * Called when a link is processed.
-         * * @param fullLink The final URL (either resolved or the original one if unrecognized).
+         * * @param rawLink The final URL (either resolved or the original one if unrecognized).
          * @param data Object containing details about the link.
          */
-        fun onDynamicLinkRetrieved(fullLink: Uri, data: LinkData)
+        fun onDynamicLinkRetrieved(rawLink: Uri, data: LinkData)
 
         /**
          * Called ONLY if a critical error occurs that cannot be handled by "Fail-open".
@@ -85,7 +85,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
      */
     data class LinkData(
         val id: String?,
-        val fullLink: String,
+        val rawLink: String,
         val createdAt: Long?,
         val updatedAt: Long?,
         val userId: String?,
@@ -107,7 +107,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
             fun unrecognized(uri: Uri): LinkData {
                 return LinkData(
                     id = null,
-                    fullLink = uri.toString(), // We just return the original link
+                    rawLink = uri.toString(), // We just return the original link
                     createdAt = null,
                     updatedAt = null,
                     userId = null,
@@ -157,7 +157,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
 
                 return LinkData(
                     id = json.optString("id"),
-                    fullLink = json.getString("fullLink"),
+                    rawLink = json.getString("fullLink"),
                     createdAt = createdAt,
                     updatedAt = updatedAt,
                     userId = json.optString("userId"),
@@ -337,13 +337,13 @@ class LinkLab private constructor(private val applicationContext: Context) {
                         // SUCCESS: Parse the JSON from the server
                         val json = JSONObject(responseBody)
                         val linkData = LinkData.fromJson(json)
-                        val fullLink = linkData.fullLink.toUri()
+                        val rawLink = linkData.rawLink.toUri()
 
                         // Mark as processed
                         linkData.id?.let { processedLinkIds.add(it) }
 
                         Log.d(TAG, "Link details retrieved successfully")
-                        notifySuccess(fullLink, linkData)
+                        notifySuccess(rawLink, linkData)
                     } catch (e: Exception) {
                         Log.d(TAG, "Failed to parse link data: ${e.message}. Failing open.")
                         // SAFETY: If JSON is bad, return original link.
@@ -376,10 +376,10 @@ class LinkLab private constructor(private val applicationContext: Context) {
                             val body = response.body?.string() ?: return
                             val json = JSONObject(body)
                             val linkData = LinkData.fromJson(json)
-                            val fullLink = linkData.fullLink.toUri()
+                            val rawLink = linkData.rawLink.toUri()
 
                             linkData.id?.let { processedLinkIds.add(it) }
-                            notifySuccess(fullLink, linkData)
+                            notifySuccess(rawLink, linkData)
                         } catch (e: Exception) {
                             Log.e(TAG, "Referrer parse failed", e)
                         }
@@ -392,11 +392,11 @@ class LinkLab private constructor(private val applicationContext: Context) {
     /**
      * Helper to send success result to the main thread (UI).
      */
-    private fun notifySuccess(fullLink: Uri, data: LinkData) {
+    private fun notifySuccess(rawLink: Uri, data: LinkData) {
         // Extract query parameters from the full link URL
         val queryParams = mutableMapOf<String, String>()
-        if (fullLink.query != null) {
-            val query = fullLink.query ?: ""
+        if (rawLink.query != null) {
+            val query = rawLink.query ?: ""
             val pairs = query.split("&")
             for (pair in pairs) {
                 val idx = pair.indexOf("=")
@@ -425,7 +425,7 @@ class LinkLab private constructor(private val applicationContext: Context) {
         // Send to listeners on Main Thread
         mainHandler.post {
             listeners.forEach { listener ->
-                listener.onDynamicLinkRetrieved(fullLink, dataWithParams)
+                listener.onDynamicLinkRetrieved(rawLink, dataWithParams)
             }
         }
     }
