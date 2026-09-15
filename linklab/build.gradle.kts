@@ -205,7 +205,7 @@ tasks.register("publishToCentralPortal") {
                 "-H", "Accept: application/json",
                 "-F", "bundle=@${bundleFile.absolutePath}",
                 "-w", "\\n%{http_code}",
-                "https://central.sonatype.com/api/v1/publisher/upload"
+                "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC"
             )
             standardOutput = stdout
             errorOutput = stderr
