@@ -1,81 +1,77 @@
-# LinkLab Android SDK
+# Linklab Android SDK
 
-The LinkLab Android SDK makes it easy to implement dynamic links in your Android application. This SDK allows you to create, manage, and track deep links that work across platforms and provide a seamless user experience.
+Resolve [Linklab](https://linklab.cc) dynamic links in your Android app: direct App Links
+(`https://linklab.cc/...` or your custom domain) and deferred deep links delivered through the
+Google Play Install Referrer after a fresh install.
 
-## Features
-
-- Process dynamic links that launch your app
-- Retrieve full links from short links
-- Handle custom deep link routing
-- Automatically track dynamic link analytics
-- Capture Google Play install referrer information to track app installs from LinkLab links
-
-## Requirements
-
-- Android SDK 21+
-- Kotlin 2.0+
-- OkHttp 4.11.0+
-- Google Play Install Referrer Library 2.2+
+- Kotlin, single artifact `cc.linklab:android`
+- minSdk 21, compileSdk 36
+- Dependencies: OkHttp 4, Play Install Referrer 2.2, AndroidX core
 
 ## Installation
 
-### Gradle
-
-Add the LinkLab SDK to your project by including it in your app's `build.gradle.kts` file:
-
 ```kotlin
-dependencies {
-    implementation("cc.linklab:android:0.0.1-SNAPSHOT")
-}
-```
-
-Make sure you have the Maven Central repository in your project's `settings.gradle.kts`:
-
-```kotlin
+// settings.gradle.kts
 dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // For SNAPSHOT versions
-        maven {
-            url = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
-        }
     }
+}
+
+// app/build.gradle.kts
+dependencies {
+    implementation("cc.linklab:android:0.1.0")
 }
 ```
 
-## Usage
+The SDK declares `android.permission.INTERNET` in its manifest; nothing else is required.
 
-### Initialization
+## Initialisation
 
-Initialize the LinkLab SDK in your application or main activity:
+Initialise once (Application or launcher Activity) with a `LinkLabConfig`:
 
 ```kotlin
-// Initialize LinkLab
-LinkLab.getInstance(context)
-    .configure("your_api_key_here")
-    .addListener(this)
+// Kotlin
+val config = LinkLabConfig(
+    customDomains = listOf("links.example.com"), // hosts you registered in Linklab
+    debugLoggingEnabled = BuildConfig.DEBUG,
+)
+LinkLab.getInstance(context).init(config).addListener(listener)
 ```
 
-This initialization will automatically check for install referrer information if the app is being opened for the first time after installation. If the app was installed through a LinkLab link that contains a `linklab_id` parameter, it will retrieve the link details.
+```java
+// Java
+LinkLabConfig config = new LinkLabConfig.Builder()
+        .customDomains(Arrays.asList("links.example.com"))
+        .debugLoggingEnabled(BuildConfig.DEBUG)
+        .build();
+LinkLab.getInstance(context).init(config).addListener(listener);
+```
 
-### Processing Dynamic Links
+| option | default | meaning |
+|---|---|---|
+| `customDomains` | `[]` | Extra hosts treated as Linklab links (exact match, case-insensitive). `linklab.cc` and `*.linklab.cc` are always recognised. |
+| `debugLoggingEnabled` | `false` | Logcat output under tag `LinkLab`. |
+| `networkTimeout` | `10.0` | Per-call connect/read/write timeout in seconds. |
+| `networkRetryCount` | `3` | Retries for network errors and 5xx responses (backoff 500 ms, 1 s, 2 s). 4xx is never retried. |
+| `baseUrl` | `https://linklab.cc` | API base URL. |
+| `installReferrerEnabled` | `true` | Resolve deferred deep links from the Play Install Referrer on first launch. |
 
-To process dynamic links that launch your app, implement the `LinkLab.LinkLabListener` interface and handle the callbacks:
+`init` may be called again; the latest config wins.
+
+## Receiving links
+
+Implement `LinkLab.LinkLabListener` and forward every incoming intent to
+`processDynamicLink(intent)`:
 
 ```kotlin
 class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        // Initialize LinkLab
-        LinkLab.getInstance(this)
-            .configure("your_api_key_here")
+        LinkLab.getInstance(this).init(LinkLabConfig(customDomains = listOf("links.example.com")))
             .addListener(this)
-
-        // Process any dynamic links that launched the app
         handleIntent(intent)
     }
 
@@ -84,132 +80,142 @@ class MainActivity : AppCompatActivity(), LinkLab.LinkLabListener {
         handleIntent(intent)
     }
 
-    private fun handleIntent(intent: Intent) {
-        // Check if the app was launched from a dynamic link
-        if (LinkLab.getInstance(this).processDynamicLink(intent)) {
-            // The link is being processed, we'll get the result in the callback
-            Log.d(TAG, "Processing dynamic link from intent")
-        } else {
-            // This was not a dynamic link, handle normal deep linking if needed
-            intent.data?.let { deepLink ->
-                handleDeepLink(deepLink)
-            }
+    private fun handleIntent(intent: Intent?) {
+        if (!LinkLab.getInstance(this).processDynamicLink(intent)) {
+            // Not a Linklab link (or no data): handle your own deep links here.
+            intent?.data?.let { handleOwnDeepLink(it) }
         }
     }
 
-    // Implement LinkLabListener methods
     override fun onDynamicLinkRetrieved(fullLink: Uri, data: LinkLab.LinkData) {
-        // Handle the retrieved dynamic link
-        Log.d(TAG, "Dynamic link retrieved: $fullLink")
-        
-        // Now you can navigate to the appropriate screen based on the link
-        handleFullLink(fullLink, data)
+        when (data.resolutionStatus) {
+            "resolved" -> navigate(fullLink, data.parameters)
+            "unrecognized", "failed" -> navigate(fullLink, data.parameters) // fail-open with the original URL
+        }
     }
 
-    override fun onError(exception: Exception) {
-        // Handle errors
-        Log.e(TAG, "Error handling dynamic link", exception)
-    }
-}
-```
-
-### Getting a Dynamic Link Programmatically
-
-You can also retrieve a full link from a short link programmatically:
-
-```kotlin
-val shortLinkUri = Uri.parse("https://linklab.cc/abcd1234")
-LinkLab.getInstance(context).getDynamicLink(shortLinkUri)
-```
-
-### Handling Different Link Types
-
-You can route to different parts of your app based on the link path:
-
-```kotlin
-private fun handleFullLink(fullLink: Uri, data: LinkLab.LinkData) {
-    // Example of handling different types of links
-    val path = fullLink.path
-
-    when {
-        path?.startsWith("/product/") == true -> {
-            val productId = path.substring("/product/".length)
-            openProductDetails(productId)
-        }
-        path?.startsWith("/category/") == true -> {
-            val category = path.substring("/category/".length)
-            openCategoryScreen(category)
-        }
-        else -> {
-            // Default handling
-            openMainScreen()
-        }
+    override fun onDestroy() {
+        super.onDestroy()
+        LinkLab.getInstance(this).removeListener(this)
     }
 }
 ```
 
-## Install Referrer Integration
+### `processDynamicLink(intent)` semantics
 
-The SDK automatically integrates with the Google Play Install Referrer API to track app installs from LinkLab links. When a user installs your app through a LinkLab link, the SDK will:
+- Returns **`false`** and delivers **nothing** when the intent has no data, the URL is not
+  `http(s)`, or the host is neither `linklab.cc`, `*.linklab.cc`, nor one of your
+  `customDomains`. Your app handles such intents itself.
+- Returns **`true`** for Linklab URLs; the result arrives asynchronously on the main thread via
+  `onDynamicLinkRetrieved`:
+  - `resolutionStatus = "resolved"` when the server knows the link;
+  - `"unrecognized"` when the server returns 404 **or** the URL has no path (e.g.
+    `https://links.example.com/?campaign=x` - delivered immediately without a network call so
+    query-only landing pages still reach the app);
+  - `"failed"` with `errorMessage` when the request fails after all retries.
 
-1. Retrieve the install referrer information from Google Play
-2. Extract the `linklab_id` parameter from the referrer URL
-3. Fetch the full link details from the LinkLab API
-4. Deliver the results through the same listener interface
+  For `"unrecognized"`/`"failed"`, `fullLink` is the original URL and `parameters` are its query
+  parameters, so you can always fail open.
+- The same URL is processed at most once while a request for it is in flight; re-opening it after
+  completion processes it again.
+- A listener added **after** a link was delivered receives the most recent link once. This makes
+  it safe to register listeners from screens that appear after the launch intent was processed.
+- `getDynamicLink(uri)` does the same for a bare `Uri`; `isLinkLabLink(intent|uri)` answers the
+  host check without side effects.
 
-This allows you to attribute app installs to specific LinkLab marketing campaigns and provide a personalized onboarding experience based on the link that led to the installation.
+### `LinkData`
 
-### How It Works
+| field | type | notes |
+|---|---|---|
+| `id` | `String?` | server link id; `null` for unrecognized/failed |
+| `fullLink` | `String` | destination URL; for unrecognized/failed the original URL |
+| `shortLink` | `String?` | URL as received by the app; `null` for install-referrer links |
+| `createdAt` / `updatedAt` | `Long?` | epoch millis |
+| `packageName`, `bundleId`, `appStoreId` | `String?` | as configured in Linklab |
+| `domain` | `String?` | host |
+| `domainType` | `String` | `"linklab"`, `"custom"` or `"unrecognized"` |
+| `parameters` | `Map<String,String>` | never null: query params of `fullLink` (URL-decoded), overridden by server-side parameters |
+| `resolutionStatus` | `String` | `"resolved"`, `"unrecognized"`, `"failed"` |
+| `errorMessage` | `String?` | set when `resolutionStatus == "failed"` |
+| `isDeferred` | `Boolean` | `true` for install-referrer links |
+| `matchType` | `String` | `"direct"` or `"installReferrer"` |
 
-1. When a user clicks on this link and installs your app from Google Play, the install referrer information is stored
-2. When your app launches for the first time, the SDK automatically checks for install referrer information
-3. If the referrer is linklab the SDK fetches the full link details
-4. Your app receives the same callback as if the user had opened a dynamic link directly
+`rawLink` is kept as a deprecated alias of `fullLink` for one release.
 
-## Sample App
+## App Links setup
 
-This repository includes a sample app that demonstrates how to use the LinkLab SDK. To run the sample app:
+Declare the Linklab hosts on the Activity that should receive links, with `autoVerify` so Android
+opens them directly in your app:
 
-1. Clone this repository
-2. Open the project in Android Studio
-3. Replace `your_api_key_here` in `MainActivity.kt` with your LinkLab API key
-4. Run the sample app on your device
+```xml
+<activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask">
+    <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="https" />
+        <data android:host="linklab.cc" />
+        <data android:host="links.example.com" />
+    </intent-filter>
+</activity>
+```
 
-The sample app demonstrates both direct deep linking and install referrer handling.
+Each host must serve `https://<host>/.well-known/assetlinks.json` containing your package name
+and the SHA-256 fingerprint(s) of your signing certificate(s) (upload key **and** Play App
+Signing key):
+
+```json
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.example.app",
+    "sha256_cert_fingerprints": ["AA:BB:..."]
+  }
+}]
+```
+
+For `linklab.cc` and your custom domains, enter the package name and fingerprints in the Linklab
+dashboard; Linklab serves the file for you. Verify with
+`adb shell pm get-app-links com.example.app`.
+
+## Deferred deep links (install referrer)
+
+When a user without the app taps a Linklab link, Linklab sends them to Google Play with a
+referrer of the form
+
+```
+linklab_id=<id>&domain=<host>
+```
+
+(URL-encoded values; the base64-encoded form of the same string is also accepted). On the first
+launch after install the SDK reads the Play Install Referrer, resolves the link and delivers it
+through the same listener with `isDeferred = true`, `matchType = "installReferrer"` and
+`shortLink = null`. Organic installs (no `linklab_id`) deliver nothing.
+
+The check runs at most 3 times and only within 24 hours of the first launch; transient failures
+(Play Services unavailable, network errors) are retried on the next `init`, definitive outcomes
+(link delivered, link not found, no Linklab referrer) end it. Set
+`installReferrerEnabled = false` to disable it entirely.
+
+## Logging and privacy
+
+Nothing is logged unless `debugLoggingEnabled = true`. Even then the SDK never logs query strings
+or fragments - only `scheme://host/path` - so parameters such as tokens or user identifiers never
+reach Logcat. Requests to the Linklab API carry `User-Agent`, `X-Linklab-Sdk` and
+`X-Linklab-App` (your package name) headers and no other identifiers. The SDK stores only the
+deferred-check state (`linklab_prefs`) in SharedPreferences.
+
+## Sample app
+
+`sample/` contains a minimal Activity showing initialisation, intent handling and the App Links
+intent-filter. Run it with `./gradlew :sample:installDebug` and open a link with
+`adb shell am start -a android.intent.action.VIEW -d "https://linklab.cc/<id>"`.
+
+## Publishing
+
+See [PUBLISHING.md](PUBLISHING.md).
 
 ## License
 
-This project is licensed under the Apache License, Version 2.0. See the LICENSE file for details.
-
-## Publishing to Maven Central
-
-The library uses the Nexus Publish Plugin to deploy to Maven Central. For detailed instructions, see [PUBLISHING.md](PUBLISHING.md).
-
-Quick guide:
-
-1. Setup your Sonatype OSSRH account and GPG key
-2. Add credentials to `~/.gradle/gradle.properties`:
-
-```properties
-ossrhUsername=your_sonatype_username
-ossrhPassword=your_sonatype_password
-
-# For GPG signing
-signing.keyId=your_gpg_key_id_last_8_chars
-signing.password=your_gpg_key_password
-signing.secretKeyRingFile=/path/to/your/gpg/secring.gpg
-```
-
-3. Publish with:
-
-```bash
-# For SNAPSHOT versions
-./gradlew publishToMavenCentral
-
-# For release versions (publishes and releases)
-./gradlew publishAndRelease
-```
-
-## Support
-
-For questions or support, please contact support@linklab.cc or visit our website at [https://linklab.cc](https://linklab.cc)
+Apache License, Version 2.0 - see [LICENSE](LICENSE).

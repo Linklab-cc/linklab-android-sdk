@@ -1,8 +1,8 @@
 plugins {
-    id("com.android.library") version "8.9.0" apply false
-    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
-    alias(libs.plugins.compose.compiler) apply false
-    id("io.github.gradle-nexus.publish-plugin") version "1.3.0"
+    alias(libs.plugins.android.library) apply false
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.kotlin.android) apply false
+    alias(libs.plugins.nexus.publish)
 }
 
 tasks.register("clean", Delete::class) {
@@ -12,11 +12,12 @@ tasks.register("clean", Delete::class) {
 nexusPublishing {
     repositories {
         sonatype {
-            // Sonatype OSSRH endpoints
+            // Legacy Sonatype OSSRH endpoints (only used by the legacy publish tasks below)
             nexusUrl.set(uri("https://s01.oss.sonatype.org/service/local/"))
             snapshotRepositoryUrl.set(uri("https://s01.oss.sonatype.org/content/repositories/snapshots/"))
-            
-            // Credentials from gradle.properties or environment variables
+
+            // Credentials come from -P flags, ~/.gradle/gradle.properties or environment variables.
+            // They are never checked into this repository.
             username.set(System.getenv("OSSRH_USERNAME") ?: findProperty("ossrhUsername")?.toString() ?: "")
             password.set(System.getenv("OSSRH_PASSWORD") ?: findProperty("ossrhPassword")?.toString() ?: "")
         }
@@ -38,17 +39,15 @@ tasks.register("publishSnapshot") {
     }
     doLast {
         val version = findProperty("version")?.toString() ?: "unknown"
-        println("✅ Snapshot publishing complete!")
-        println("📦 Snapshot cc.linklab:android:$version uploaded to Central Portal")
-        println("🔍 Check status at: https://central.sonatype.com/publishing")
-        println("⏱  Will be available shortly at: https://central.sonatype.com/artifact/cc.linklab/android")
+        println("Snapshot cc.linklab:android:$version uploaded to Central Portal")
+        println("Check status at: https://central.sonatype.com/publishing")
     }
 }
 
 // New Central Portal (automated, for releases)
 tasks.register("publishRelease") {
     group = "publishing"
-    description = "Build, sign, and publish release to Maven Central (New Portal)"
+    description = "Build, sign, and publish release to Maven Central (Central Portal)"
     dependsOn("clean", ":linklab:publishToCentralPortal")
     doFirst {
         val v = findProperty("version")?.toString() ?: ""
@@ -57,21 +56,15 @@ tasks.register("publishRelease") {
         }
     }
     doLast {
-        println("✅ Publishing complete!")
+        println("Publishing complete!")
     }
 }
 
 // Legacy OSSRH tasks
 tasks.register("publishToMavenCentral") {
     dependsOn(":linklab:publishLinkLabToSonatype")
-    doLast {
-        println("Publishing to Maven Central...")
-    }
 }
 
 tasks.register("publishAndRelease") {
     dependsOn(":linklab:publishLinkLabToSonatype", ":linklab:releaseSonatypeRepository")
-    doLast {
-        println("Publishing and releasing to Maven Central...")
-    }
 }

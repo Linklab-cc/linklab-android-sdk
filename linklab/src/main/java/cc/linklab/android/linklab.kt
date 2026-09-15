@@ -4,521 +4,804 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
-import androidx.core.content.edit
-import androidx.core.net.toUri
 import com.android.installreferrer.api.InstallReferrerClient
+import com.android.installreferrer.api.InstallReferrerClient.InstallReferrerResponse
 import com.android.installreferrer.api.InstallReferrerStateListener
-import com.android.installreferrer.api.ReferrerDetails
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
-import java.text.SimpleDateFormat
+import java.util.GregorianCalendar
+import java.util.Locale
 import java.util.TimeZone
-import java.util.concurrent.Executor
-import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 
 /**
- * Configuration class for LinkLab SDK.
- * This holds settings like custom domains and debug mode.
+ * Configuration for the LinkLab SDK.
+ *
+ * Kotlin callers can use the constructor with named arguments; Java callers should use
+ * [LinkLabConfig.Builder].
+ *
+ * @property customDomains Additional hosts (exact match, case-insensitive) that should be treated
+ *   as Linklab links, e.g. `listOf("links.example.com")`. `linklab.cc` and `*.linklab.cc` are
+ *   always recognised.
+ * @property debugLoggingEnabled Enables Logcat output (tag `LinkLab`). Query strings are never logged.
+ * @property networkTimeout Per-call connect/read/write timeout in seconds.
+ * @property networkRetryCount Number of retries for network errors and 5xx responses
+ *   (exponential backoff: 500 ms, 1 s, 2 s, ...). 4xx responses are never retried.
+ * @property baseUrl Linklab API base URL.
+ * @property installReferrerEnabled Whether to resolve deferred deep links from the Google Play
+ *   Install Referrer on first launch.
  */
-class LinkLabConfig(
-    val customDomains: List<String> = listOf(),
+class LinkLabConfig @JvmOverloads constructor(
+    customDomains: List<String> = emptyList(),
     val debugLoggingEnabled: Boolean = false,
-    val networkTimeout: Double = 30.0,
-    val networkRetryCount: Int = 3
-)
+    val networkTimeout: Double = 10.0,
+    val networkRetryCount: Int = 3,
+    val baseUrl: String = DEFAULT_BASE_URL,
+    val installReferrerEnabled: Boolean = true,
+) {
+    /** Custom domains, normalised to lower case. */
+    val customDomains: List<String> = customDomains.map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
+
+    /** Java-friendly builder. */
+    class Builder {
+        private var customDomains: List<String> = emptyList()
+        private var debugLoggingEnabled: Boolean = false
+        private var networkTimeout: Double = 10.0
+        private var networkRetryCount: Int = 3
+        private var baseUrl: String = DEFAULT_BASE_URL
+        private var installReferrerEnabled: Boolean = true
+
+        fun customDomains(domains: List<String>): Builder = apply { customDomains = domains }
+        fun debugLoggingEnabled(enabled: Boolean): Builder = apply { debugLoggingEnabled = enabled }
+        fun networkTimeout(seconds: Double): Builder = apply { networkTimeout = seconds }
+        fun networkRetryCount(count: Int): Builder = apply { networkRetryCount = count }
+        fun baseUrl(url: String): Builder = apply { baseUrl = url }
+        fun installReferrerEnabled(enabled: Boolean): Builder = apply { installReferrerEnabled = enabled }
+
+        fun build(): LinkLabConfig = LinkLabConfig(
+            customDomains = customDomains,
+            debugLoggingEnabled = debugLoggingEnabled,
+            networkTimeout = networkTimeout,
+            networkRetryCount = networkRetryCount,
+            baseUrl = baseUrl,
+            installReferrerEnabled = installReferrerEnabled,
+        )
+    }
+
+    override fun toString(): String =
+        "LinkLabConfig(customDomains=$customDomains, debugLoggingEnabled=$debugLoggingEnabled, " +
+            "networkTimeout=$networkTimeout, networkRetryCount=$networkRetryCount, baseUrl=$baseUrl, " +
+            "installReferrerEnabled=$installReferrerEnabled)"
+
+    companion object {
+        const val DEFAULT_BASE_URL = "https://linklab.cc"
+    }
+}
 
 /**
- * LinkLab is a library for handling deep links for Android applications.
- * It handles the logic of checking if a link belongs to the service or not.
+ * LinkLab resolves Linklab dynamic links (direct App Links and deferred install-referrer links)
+ * and delivers the result to registered [LinkLabListener]s on the main thread.
+ *
+ * Typical usage:
+ * ```
+ * LinkLab.getInstance(context).init(LinkLabConfig(customDomains = listOf("links.example.com")))
+ *     .addListener(listener)
+ * // in onCreate / onNewIntent:
+ * if (!LinkLab.getInstance(context).processDynamicLink(intent)) { /* not a Linklab link */ }
+ * ```
  */
 class LinkLab private constructor(private val applicationContext: Context) {
-    // Tool for making network requests
-    private val httpClient = OkHttpClient()
 
-    // Background worker to keep the main app smooth
-    private val backgroundExecutor: Executor = Executors.newSingleThreadExecutor()
-
-    // Handler to send results back to the main screen (UI)
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    // List of parts of the app listening for link results
-    private val listeners = mutableListOf<LinkLabListener>()
-
-    private var referrerClient: InstallReferrerClient? = null
-    private val preferences: SharedPreferences =
-        applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-    private val processedLinkIds = mutableSetOf<String>()
-    private var config: LinkLabConfig = LinkLabConfig()
-    private var checkedInstallReferrer = preferences.getBoolean(KEY_CHECKED_INSTALL_REFERRER, false)
-
-    /**
-     * Interface for callbacks when a deep link is processed.
-     * This is how the app receives the result.
-     */
+    /** Callback interface for link results. All methods are invoked on the main thread. */
     interface LinkLabListener {
         /**
-         * Called when a link is processed.
-         * * @param rawLink The final URL (either resolved or the original one if unrecognized).
-         * @param data Object containing details about the link.
+         * Called once per received link with the resolution result.
+         *
+         * @param fullLink the resolved destination (or the original URL when
+         *   [LinkData.resolutionStatus] is not `"resolved"`). Equals `Uri.parse(data.fullLink)`.
+         * @param data details about the link.
          */
-        fun onDynamicLinkRetrieved(rawLink: Uri, data: LinkData)
+        fun onDynamicLinkRetrieved(fullLink: Uri, data: LinkData)
 
         /**
-         * Called ONLY if a critical error occurs that cannot be handled by "Fail-open".
+         * Called only for unexpected SDK-internal errors. Link resolution problems are reported
+         * through [onDynamicLinkRetrieved] with `resolutionStatus = "failed"` instead.
          */
-        fun onError(exception: Exception)
+        fun onError(exception: Exception) {}
     }
 
     /**
-     * Container for link data.
-     * Describes the properties of a link.
+     * Result of resolving a link. Field names match the iOS and Flutter SDKs.
      */
     data class LinkData(
+        /** Server link id; null for unrecognized/failed links. */
         val id: String?,
-        val rawLink: String,
+        /** Destination URL; for unrecognized/failed links this is the original URL as received. */
+        val fullLink: String,
+        /** The URL as received by the app; null for install-referrer (deferred) links. */
+        val shortLink: String?,
+        /** Creation time, epoch millis. */
         val createdAt: Long?,
+        /** Last update time, epoch millis. */
         val updatedAt: Long?,
-        val userId: String?,
         val packageName: String?,
         val bundleId: String?,
         val appStoreId: String?,
+        /** Host of the link. */
         val domain: String?,
-        val domainType: String, // Type of domain (e.g., "custom", "default", or "unrecognized")
-        val parameters: Map<String, String>? = null
+        /** `"linklab"`, `"custom"` or `"unrecognized"`. */
+        val domainType: String,
+        /** Query parameters of [fullLink] (URL-decoded) overridden by server-side parameters. Never null. */
+        val parameters: Map<String, String>,
+        /** `"resolved"`, `"unrecognized"` or `"failed"`. */
+        val resolutionStatus: String,
+        /** Set when [resolutionStatus] is `"failed"`. */
+        val errorMessage: String?,
+        /** True when obtained through the install referrer rather than an incoming intent. */
+        val isDeferred: Boolean,
+        /** `"direct"`, `"installReferrer"` or `"none"`. */
+        val matchType: String,
     ) {
+        @Deprecated("Use fullLink", ReplaceWith("fullLink"))
+        val rawLink: String
+            get() = fullLink
+
         companion object {
-            private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'").apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }
+            const val STATUS_RESOLVED = "resolved"
+            const val STATUS_UNRECOGNIZED = "unrecognized"
+            const val STATUS_FAILED = "failed"
 
-            // --- FAIL-OPEN HELPER ---
-            // This creates a "safe" object when we don't know the link or the API fails.
-            // It allows the app to continue working with the original link.
-            fun unrecognized(uri: Uri): LinkData {
+            const val DOMAIN_TYPE_LINKLAB = "linklab"
+            const val DOMAIN_TYPE_CUSTOM = "custom"
+            const val DOMAIN_TYPE_UNRECOGNIZED = "unrecognized"
+
+            const val MATCH_DIRECT = "direct"
+            const val MATCH_INSTALL_REFERRER = "installReferrer"
+            const val MATCH_NONE = "none"
+
+            /** A Linklab-domain URL that the server does not know (404) or that carries no link id. */
+            @JvmStatic
+            fun unrecognized(uri: Uri): LinkData = passthrough(uri, STATUS_UNRECOGNIZED, null)
+
+            /** A Linklab-domain URL that could not be resolved because of a network/server/decoding error. */
+            @JvmStatic
+            fun failed(uri: Uri, message: String?): LinkData = passthrough(uri, STATUS_FAILED, message ?: "Unknown error")
+
+            private fun passthrough(uri: Uri, status: String, message: String?) = LinkData(
+                id = null,
+                fullLink = uri.toString(),
+                shortLink = uri.toString(),
+                createdAt = null,
+                updatedAt = null,
+                packageName = null,
+                bundleId = null,
+                appStoreId = null,
+                domain = uri.host,
+                domainType = DOMAIN_TYPE_UNRECOGNIZED,
+                parameters = queryParameters(uri),
+                resolutionStatus = status,
+                errorMessage = message,
+                isDeferred = false,
+                matchType = MATCH_DIRECT,
+            )
+
+            /**
+             * Builds a resolved [LinkData] from the server JSON.
+             *
+             * @throws org.json.JSONException when `fullLink` is missing.
+             */
+            @JvmStatic
+            @JvmOverloads
+            fun fromJson(
+                json: JSONObject,
+                shortLink: String?,
+                isDeferred: Boolean = false,
+                matchType: String = MATCH_DIRECT,
+            ): LinkData {
+                val fullLink = json.getString("fullLink")
+                val fullUri = Uri.parse(fullLink)
+                val domain = json.optNullableString("domain") ?: shortLink?.let { Uri.parse(it).host }
+
+                val domainType = when (json.optNullableString("domainType")?.lowercase(Locale.ROOT)) {
+                    "custom" -> DOMAIN_TYPE_CUSTOM
+                    "linklab", "default" -> DOMAIN_TYPE_LINKLAB
+                    else -> if (isLinklabHost(domain)) DOMAIN_TYPE_LINKLAB else DOMAIN_TYPE_CUSTOM
+                }
+
+                val parameters = LinkedHashMap(queryParameters(fullUri))
+                json.optJSONObject("parameters")?.let { obj ->
+                    val keys = obj.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        if (!obj.isNull(key)) parameters[key] = obj.opt(key).toString()
+                    }
+                }
+
                 return LinkData(
-                    id = null,
-                    rawLink = uri.toString(), // We just return the original link
-                    createdAt = null,
-                    updatedAt = null,
-                    userId = null,
-                    packageName = null,
-                    bundleId = null,
-                    appStoreId = null,
-                    domain = uri.host,
-                    domainType = "unrecognized", // Tag it as unrecognized
-                    parameters = null
+                    id = json.optNullableString("id"),
+                    fullLink = fullLink,
+                    shortLink = shortLink,
+                    createdAt = parseIso8601(json.optNullableString("createdAt")),
+                    updatedAt = parseIso8601(json.optNullableString("updatedAt")),
+                    packageName = json.optNullableString("packageName"),
+                    bundleId = json.optNullableString("bundleId"),
+                    appStoreId = json.optNullableString("appStoreId"),
+                    domain = domain,
+                    domainType = domainType,
+                    parameters = parameters,
+                    resolutionStatus = STATUS_RESOLVED,
+                    errorMessage = null,
+                    isDeferred = isDeferred,
+                    matchType = matchType,
                 )
             }
 
-            fun fromJson(json: JSONObject): LinkData {
-                // Parse date strings to Long timestamps
-                val createdAtStr = json.optString("createdAt")
-                val updatedAtStr = json.optString("updatedAt")
-
-                val createdAt = if (createdAtStr.isNotEmpty()) {
-                    try {
-                        dateFormat.parse(createdAtStr)?.time
-                    } catch (e: Exception) {
-                        null
+            /** URL-decoded query parameters of [uri]; empty for opaque or query-less URIs. */
+            @JvmStatic
+            fun queryParameters(uri: Uri): Map<String, String> {
+                if (uri.isOpaque || uri.encodedQuery.isNullOrEmpty()) return emptyMap()
+                val result = LinkedHashMap<String, String>()
+                try {
+                    for (name in uri.queryParameterNames) {
+                        result[name] = uri.getQueryParameter(name) ?: ""
                     }
-                } else null
+                } catch (_: UnsupportedOperationException) {
+                    // opaque URI
+                }
+                return result
+            }
 
-                val updatedAt = if (updatedAtStr.isNotEmpty()) {
-                    try {
-                        dateFormat.parse(updatedAtStr)?.time
-                    } catch (e: Exception) {
-                        null
-                    }
-                } else null
+            private fun JSONObject.optNullableString(key: String): String? =
+                if (isNull(key)) null else opt(key)?.toString()?.takeIf { it.isNotEmpty() }
 
-                // Parse parameters if they exist
-                val params = if (json.has("parameters")) {
-                    try {
-                        val paramsObj = json.getJSONObject("parameters")
-                        val paramMap = mutableMapOf<String, String>()
-                        paramsObj.keys().forEach { key ->
-                            paramMap[key] = paramsObj.optString(key, "")
-                        }
-                        paramMap
-                    } catch (e: Exception) {
-                        null
-                    }
-                } else null
-
-                return LinkData(
-                    id = json.optString("id"),
-                    rawLink = json.getString("fullLink"),
-                    createdAt = createdAt,
-                    updatedAt = updatedAt,
-                    userId = json.optString("userId"),
-                    packageName = json.optString("packageName").takeIf { it.isNotEmpty() },
-                    bundleId = json.optString("bundleId").takeIf { it.isNotEmpty() },
-                    appStoreId = json.optString("appStoreId").takeIf { it.isNotEmpty() },
-                    domain = json.optString("domain"),
-                    domainType = json.optString("domainType", "custom"),
-                    parameters = params
-                )
+            private fun isLinklabHost(host: String?): Boolean {
+                val h = host?.lowercase(Locale.ROOT) ?: return false
+                return h == LINKLAB_HOST || h.endsWith(".$LINKLAB_HOST")
             }
         }
     }
 
-    /**
-     * Init LinkLab
-     */
+    // ------------------------------------------------------------------------------------------
+    // State
+    // ------------------------------------------------------------------------------------------
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val listeners = CopyOnWriteArrayList<LinkLabListener>()
+
+    @Volatile
+    private var config: LinkLabConfig = LinkLabConfig()
+
+    @Volatile
+    private var injectedHttpClient: OkHttpClient? = null
+
+    @Volatile
+    private var builtHttpClient: OkHttpClient? = null
+
+    private val preferences: SharedPreferences by lazy {
+        applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    /** Incoming URLs currently being resolved (rule 7: exactly-once per in-flight URL). */
+    private val inFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    private val deliveryLock = Any()
+    private var lastDelivered: LinkData? = null
+    private val receivedLastDelivered: MutableSet<LinkLabListener> = HashSet()
+
+    private var referrerClient: InstallReferrerClient? = null
+    private var referrerReconnectAttempted = false
+
+    // ------------------------------------------------------------------------------------------
+    // Public API
+    // ------------------------------------------------------------------------------------------
+
+    /** Initialises the SDK. Safe to call more than once; the last config wins. */
     fun init(config: LinkLabConfig = LinkLabConfig()): LinkLab {
         this.config = config
-
-        if (config.debugLoggingEnabled) {
-            Log.d(TAG, "Initializing LinkLab with config: customDomains=${config.customDomains}")
+        builtHttpClient = null
+        log("Initialising with $config")
+        if (config.installReferrerEnabled) {
+            runDeferredCheck()
+        } else {
+            log("Install referrer check disabled by config")
         }
-
-        if (!checkedInstallReferrer) {
-            checkInstallReferrer()
-        }
-
         return this
     }
 
+    /**
+     * Replaces the HTTP client used for API calls (e.g. to add interceptors or in tests).
+     * Timeouts configured on the supplied client are used as-is.
+     */
+    fun setHttpClient(client: OkHttpClient?): LinkLab {
+        injectedHttpClient = client
+        return this
+    }
+
+    /**
+     * Registers a listener. If a link was already delivered in this process, the listener
+     * receives that last link once, immediately (on the main thread).
+     */
     fun addListener(listener: LinkLabListener): LinkLab {
-        if (!listeners.contains(listener)) {
-            listeners.add(listener)
+        listeners.addIfAbsent(listener)
+        val replay = synchronized(deliveryLock) {
+            val last = lastDelivered
+            if (last != null && receivedLastDelivered.add(listener)) last else null
+        }
+        if (replay != null) {
+            log("Replaying last delivered link to a late listener")
+            mainHandler.post { safeDeliver(listener, replay) }
         }
         return this
     }
 
     fun removeListener(listener: LinkLabListener): LinkLab {
         listeners.remove(listener)
+        synchronized(deliveryLock) { receivedLastDelivered.remove(listener) }
         return this
     }
 
-    /**
-     * Check if an intent contains a LinkLab dynamic link.
-     * This checks if the link domain matches our service or custom domains.
-     */
-    fun isLinkLabLink(intent: Intent?): Boolean {
-        if (intent?.data == null) {
-            return false
-        }
+    /** True if [intent] carries an http(s) URL whose host is `linklab.cc`, `*.linklab.cc` or a configured custom domain. */
+    fun isLinkLabLink(intent: Intent?): Boolean = isLinkLabLink(intent?.data)
 
-        val uri = intent.data ?: return false
-        val host = uri.host ?: return false
-
-        // Check against the default domain
-        if (host == REDIRECT_HOST || host.endsWith(".$REDIRECT_HOST")) {
-            return true
-        }
-
-        // Check against custom domains
-        for (domain in config.customDomains) {
-            if (host == domain || host.endsWith(".$domain")) {
-                return true
-            }
-        }
-        return false
+    /** True if [uri] is an http(s) URL whose host is `linklab.cc`, `*.linklab.cc` or a configured custom domain. */
+    fun isLinkLabLink(uri: Uri?): Boolean {
+        if (uri == null) return false
+        val scheme = uri.scheme?.lowercase(Locale.ROOT)
+        if (scheme != "http" && scheme != "https") return false
+        val host = uri.host?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() } ?: return false
+        return host == LINKLAB_HOST || host.endsWith(".$LINKLAB_HOST") || config.customDomains.contains(host)
     }
 
     /**
-     * MAIN ENTRY POINT: Process a dynamic link from an intent.
-     * * Strategy:
-     * 1. If it IS a LinkLab link -> Fetch details from API.
-     * 2. If it is NOT a LinkLab link -> Return it immediately as "unrecognized".
-     * * This ensures the app always gets a result, even for external links.
+     * Processes the URL carried by [intent].
+     *
+     * @return `true` if the URL is a Linklab link and a result will be (or was) delivered to the
+     *   listeners; `false` if the intent has no data or the URL is not a Linklab link, in which
+     *   case nothing is delivered and the app should handle the intent itself.
      */
-    fun processDynamicLink(intent: Intent?): Boolean {
-        // Step 1: Get the link (URI) from the intent
-        val uri = intent?.data
+    fun processDynamicLink(intent: Intent?): Boolean = getDynamicLink(intent?.data)
 
-        // If no link exists, we can't do anything.
-        if (uri == null) {
+    /**
+     * Resolves [shortLinkUri] and delivers the result to the listeners.
+     *
+     * @return `false` (and nothing is delivered) when the URI is null or not a Linklab link.
+     */
+    fun getDynamicLink(shortLinkUri: Uri?): Boolean {
+        if (shortLinkUri == null) return false
+        if (!isLinkLabLink(shortLinkUri)) {
+            log("Ignoring non-Linklab URL ${redacted(shortLinkUri)}")
             return false
         }
-
-        // Step 2: Check if this link belongs to LinkLab or our Custom Domains
-        if (!isLinkLabLink(intent)) {
-            // --- FAIL-OPEN LOGIC ---
-            // The link exists, but it is NOT ours (e.g., google.com or another deep link).
-            // We should not ignore it. We must pass it back to the app so the app can handle it.
-
-            if (config.debugLoggingEnabled) {
-                Log.d(TAG, "External link detected (not LinkLab): $uri. Passing through as unrecognized.")
-            }
-
-            // Create a wrapper object marked as "unrecognized" and send it to listeners
-            notifySuccess(uri, LinkData.unrecognized(uri))
-
-            // Return true to indicate we handled the intent successfully
+        val linkId = shortLinkUri.lastPathSegment?.takeIf { it.isNotEmpty() }
+        val host = shortLinkUri.host!!
+        if (linkId == null) {
+            log("No link id in ${redacted(shortLinkUri)}; delivering as unrecognized")
+            deliver(LinkData.unrecognized(shortLinkUri))
             return true
         }
 
-        // Step 3: It IS a LinkLab link. Proceed to fetch details from the server.
-        retrieveLinkDetails(uri)
+        val key = shortLinkUri.toString()
+        if (!inFlight.add(key)) {
+            log("Already resolving ${redacted(shortLinkUri)}; ignoring duplicate")
+            return true
+        }
+        log("Resolving ${redacted(shortLinkUri)}")
+        fetchLink(linkId, host, shortLink = key, isDeferred = false, matchType = LinkData.MATCH_DIRECT) { outcome ->
+            inFlight.remove(key)
+            when (outcome) {
+                is FetchOutcome.Resolved -> deliver(outcome.data)
+                FetchOutcome.NotFound -> deliver(LinkData.unrecognized(shortLinkUri))
+                is FetchOutcome.Failed -> deliver(LinkData.failed(shortLinkUri, outcome.message))
+            }
+        }
         return true
     }
 
-    /**
-     * Process a dynamic link directly from a URI object (manual call).
-     */
-    fun getDynamicLink(shortLinkUri: Uri) {
-        retrieveLinkDetails(shortLinkUri)
+    // ------------------------------------------------------------------------------------------
+    // Networking
+    // ------------------------------------------------------------------------------------------
+
+    private sealed class FetchOutcome {
+        class Resolved(val data: LinkData) : FetchOutcome()
+        object NotFound : FetchOutcome()
+        class Failed(val message: String, val transient: Boolean) : FetchOutcome()
     }
 
-    /**
-     * Retrieve a dynamic link's details from the API.
-     * Uses "Fail-open" strategy: if network fails, we act as if the link is unrecognized.
-     */
-    private fun retrieveLinkDetails(uri: Uri) {
-        val linkId = uri.lastPathSegment
-        val domain = uri.host
-
-        // Validation: If format is wrong, don't crash. Just return the link as is.
-        if (linkId.isNullOrEmpty() || domain.isNullOrEmpty()) {
-            if (config.debugLoggingEnabled) {
-                Log.d(TAG, "Invalid link format. Treating as unrecognized: $uri")
-            }
-            notifySuccess(uri, LinkData.unrecognized(uri))
-            return
-        }
-
-        // Check cache to avoid duplicate processing
-        if (processedLinkIds.contains(linkId)) {
-            if (config.debugLoggingEnabled) {
-                Log.d(TAG, "Link ID $linkId has already been processed. Skipping.")
-            }
-            return
-        }
-
-        Log.d(TAG, "Attempting retrieveLinkDetails. linkId: $linkId, domain: $domain")
-
-        backgroundExecutor.execute {
-            val urlBuilder = StringBuilder("$API_HOST/links/$linkId")
-            urlBuilder.append("?domain=").append(domain)
-
-            val finalUrl = urlBuilder.toString()
-            Log.d(TAG, "Requesting link details from: $finalUrl")
-
-            val request = Request.Builder().url(finalUrl).get().build()
-
-            httpClient.newCall(request).enqueue(object : Callback {
-                // Network Error (e.g., no internet)
-                override fun onFailure(call: Call, e: IOException) {
-                    Log.d(TAG, "Network failed: ${e.message}. Failing open.")
-                    // SAFETY: Return the original link so the app isn't blocked.
-                    notifySuccess(uri, LinkData.unrecognized(uri))
-                }
-
-                // Server Response
-                override fun onResponse(call: Call, response: Response) {
-                    // Handle server errors (e.g., 404 Not Found, 500 Server Error)
-                    if (!response.isSuccessful) {
-                        Log.d(TAG, "API error: ${response.code}. Failing open.")
-                        // SAFETY: Return the original link.
-                        notifySuccess(uri, LinkData.unrecognized(uri))
-                        return
-                    }
-
-                    val responseBody = response.body?.string()
-                    if (responseBody.isNullOrEmpty()) {
-                        Log.d(TAG, "Empty body. Failing open.")
-                        notifySuccess(uri, LinkData.unrecognized(uri))
-                        return
-                    }
-
-                    try {
-                        // SUCCESS: Parse the JSON from the server
-                        val json = JSONObject(responseBody)
-                        val linkData = LinkData.fromJson(json)
-                        val rawLink = linkData.rawLink.toUri()
-
-                        // Mark as processed
-                        linkData.id?.let { processedLinkIds.add(it) }
-
-                        Log.d(TAG, "Link details retrieved successfully")
-                        notifySuccess(rawLink, linkData)
-                    } catch (e: Exception) {
-                        Log.d(TAG, "Failed to parse link data: ${e.message}. Failing open.")
-                        // SAFETY: If JSON is bad, return original link.
-                        notifySuccess(uri, LinkData.unrecognized(uri))
-                    }
-                }
-            })
+    private fun httpClient(): OkHttpClient {
+        injectedHttpClient?.let { return it }
+        return builtHttpClient ?: synchronized(this) {
+            builtHttpClient ?: buildHttpClient(config).also { builtHttpClient = it }
         }
     }
 
+    private fun buildHttpClient(config: LinkLabConfig): OkHttpClient {
+        val timeoutMs = (config.networkTimeout * 1000).toLong().coerceAtLeast(1)
+        val callTimeoutMs = timeoutMs * (config.networkRetryCount.coerceAtLeast(0) + 1) + 1000
+        return OkHttpClient.Builder()
+            .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .callTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+            .build()
+    }
+
+    private fun linkUrl(linkId: String, domain: String): HttpUrl? {
+        val base = config.baseUrl.toHttpUrlOrNull() ?: return null
+        return base.newBuilder()
+            .addPathSegment("links")
+            .addPathSegment(linkId)
+            .addQueryParameter("domain", domain)
+            .build()
+    }
+
+    private fun buildRequest(url: HttpUrl): Request {
+        val appId = applicationContext.packageName ?: "unknown"
+        return Request.Builder()
+            .url(url)
+            .get()
+            .header("Accept", "application/json")
+            .header("User-Agent", "Linklab-Android-SDK/$VERSION (Android ${Build.VERSION.RELEASE}; $appId)")
+            .header("X-Linklab-Sdk", "android/$VERSION")
+            .header("X-Linklab-App", appId)
+            .build()
+    }
+
     /**
-     * Logic for Install Referrer (Internal Use).
-     * This tracks where the app install came from.
+     * Fetches `/links/{id}?domain=` with retries (rule 4) and reports a single [FetchOutcome]
+     * to [onResult] (on an arbitrary thread).
      */
-    private fun retrieveLinkDetailsForReferrer(linkId: String, domain: String) {
-        if (processedLinkIds.contains(linkId)) return
+    private fun fetchLink(
+        linkId: String,
+        domain: String,
+        shortLink: String?,
+        isDeferred: Boolean,
+        matchType: String,
+        onResult: (FetchOutcome) -> Unit,
+    ) {
+        val url = linkUrl(linkId, domain)
+        if (url == null) {
+            onResult(FetchOutcome.Failed("Invalid baseUrl: ${config.baseUrl}", transient = false))
+            return
+        }
+        val maxRetries = config.networkRetryCount.coerceAtLeast(0)
+        val request = buildRequest(url)
 
-        backgroundExecutor.execute {
-            val url = "$API_HOST/links/$linkId?domain=$domain"
-            val request = Request.Builder().url(url).get().build()
-
-            httpClient.newCall(request).enqueue(object : Callback {
+        fun attempt(index: Int) {
+            httpClient().newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    Log.e(TAG, "Referrer fetch failed", e)
+                    retryOrFail(index, "Network error: ${e.javaClass.simpleName}: ${e.message}")
                 }
 
                 override fun onResponse(call: Call, response: Response) {
-                    if (response.isSuccessful) {
-                        try {
-                            val body = response.body?.string() ?: return
-                            val json = JSONObject(body)
-                            val linkData = LinkData.fromJson(json)
-                            val rawLink = linkData.rawLink.toUri()
-
-                            linkData.id?.let { processedLinkIds.add(it) }
-                            notifySuccess(rawLink, linkData)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Referrer parse failed", e)
+                    response.use { r ->
+                        when {
+                            r.code == 404 -> {
+                                log("Link $linkId not found (404)")
+                                onResult(FetchOutcome.NotFound)
+                            }
+                            r.code in 500..599 -> retryOrFail(index, "Server error: HTTP ${r.code}")
+                            !r.isSuccessful -> {
+                                logError("Link $linkId request rejected: HTTP ${r.code}")
+                                onResult(FetchOutcome.Failed("HTTP ${r.code}", transient = false))
+                            }
+                            else -> {
+                                val body = try {
+                                    r.body?.string()
+                                } catch (e: IOException) {
+                                    retryOrFail(index, "Network error while reading body: ${e.message}")
+                                    return
+                                }
+                                if (body.isNullOrBlank()) {
+                                    onResult(FetchOutcome.Failed("Empty response body", transient = false))
+                                    return
+                                }
+                                try {
+                                    val data = LinkData.fromJson(JSONObject(body), shortLink, isDeferred, matchType)
+                                    log("Link $linkId resolved")
+                                    onResult(FetchOutcome.Resolved(data))
+                                } catch (e: Exception) {
+                                    logError("Failed to decode link $linkId", e)
+                                    onResult(FetchOutcome.Failed("Decoding error: ${e.message}", transient = false))
+                                }
+                            }
                         }
                     }
                 }
-            })
-        }
-    }
 
-    /**
-     * Helper to send success result to the main thread (UI).
-     */
-    private fun notifySuccess(rawLink: Uri, data: LinkData) {
-        // Extract query parameters from the full link URL
-        val queryParams = mutableMapOf<String, String>()
-        if (rawLink.query != null) {
-            val query = rawLink.query ?: ""
-            val pairs = query.split("&")
-            for (pair in pairs) {
-                val idx = pair.indexOf("=")
-                if (idx > 0) {
-                    val key = pair.substring(0, idx)
-                    val value = pair.substring(idx + 1)
-                    queryParams[key] = value
-                }
-            }
-        }
-
-        // Merge existing params with URL params
-        val dataWithParams = if (queryParams.isNotEmpty()) {
-            val combinedParams = if (data.parameters != null) {
-                val combined = data.parameters.toMutableMap()
-                combined.putAll(queryParams)
-                combined
-            } else {
-                queryParams
-            }
-            data.copy(parameters = combinedParams)
-        } else {
-            data
-        }
-
-        // Send to listeners on Main Thread
-        mainHandler.post {
-            listeners.forEach { listener ->
-                listener.onDynamicLinkRetrieved(rawLink, dataWithParams)
-            }
-        }
-    }
-
-    private fun notifyError(exception: Exception) {
-        Log.e(TAG, "Error processing dynamic link", exception)
-        mainHandler.post {
-            listeners.forEach { listener ->
-                listener.onError(exception)
-            }
-        }
-    }
-
-    /**
-     * Setup Install Referrer Client.
-     */
-    private fun checkInstallReferrer() {
-        checkedInstallReferrer = true
-        preferences.edit() { putBoolean(KEY_CHECKED_INSTALL_REFERRER, true) }
-
-        try {
-            referrerClient = InstallReferrerClient.newBuilder(applicationContext).build()
-            referrerClient?.startConnection(object : InstallReferrerStateListener {
-                override fun onInstallReferrerSetupFinished(responseCode: Int) {
-                    if (responseCode == InstallReferrerClient.InstallReferrerResponse.OK) {
-                        try {
-                            val referrerDetails = referrerClient?.installReferrer
-                            parseReferrerDetails(referrerDetails)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error getting install referrer details", e)
-                        } finally {
-                            referrerClient?.endConnection()
-                        }
+                private fun retryOrFail(index: Int, message: String) {
+                    if (index < maxRetries) {
+                        val delay = RETRY_BASE_DELAY_MS shl index
+                        log("Attempt ${index + 1} for link $linkId failed ($message); retrying in ${delay}ms")
+                        mainHandler.postDelayed({ attempt(index + 1) }, delay)
                     } else {
-                        referrerClient?.endConnection()
+                        logError("Link $linkId failed after ${index + 1} attempt(s): $message")
+                        onResult(FetchOutcome.Failed(message, transient = true))
                     }
                 }
-
-                override fun onInstallReferrerServiceDisconnected() {}
             })
-        } catch (e: Exception) {
-            Log.e(TAG, "Error setting up Install Referrer", e)
+        }
+        attempt(0)
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Delivery
+    // ------------------------------------------------------------------------------------------
+
+    private fun deliver(data: LinkData) {
+        mainHandler.post {
+            val targets = listeners.toList()
+            synchronized(deliveryLock) {
+                lastDelivered = data
+                receivedLastDelivered.clear()
+                receivedLastDelivered.addAll(targets)
+            }
+            log("Delivering ${data.resolutionStatus} link to ${targets.size} listener(s)")
+            for (listener in targets) safeDeliver(listener, data)
         }
     }
 
-    private fun parseReferrerDetails(referrerDetails: ReferrerDetails?) {
-        if (referrerDetails == null) return
-
+    private fun safeDeliver(listener: LinkLabListener, data: LinkData) {
         try {
-            val encodedReferrerUrl = referrerDetails.installReferrer
-            if (encodedReferrerUrl.isNotEmpty()) {
-                val decodedReferrerUrl = try {
-                    String(Base64.decode(encodedReferrerUrl, Base64.DEFAULT), Charsets.UTF_8)
-                } catch (e: Exception) {
-                    return
-                }
+            listener.onDynamicLinkRetrieved(Uri.parse(data.fullLink), data)
+        } catch (t: Throwable) {
+            logError("Listener threw while handling link", t)
+        }
+    }
 
-                val params = decodedReferrerUrl.split("&")
-                var linkLabId: String? = null
-                var domain: String? = null
+    // ------------------------------------------------------------------------------------------
+    // Deferred deep link via Install Referrer (rule 9)
+    // ------------------------------------------------------------------------------------------
 
-                for (param in params) {
-                    val keyValue = param.split("=")
-                    if (keyValue.size == 2) {
-                        when (keyValue[0]) {
-                            "linklab_id" -> linkLabId = keyValue[1]
-                            "domain" -> domain = keyValue[1]
+    private fun deferredState(): String {
+        if (preferences.getBoolean(KEY_LEGACY_CHECKED_REFERRER, false)) return STATE_DONE
+        return preferences.getString(KEY_DEFERRED_STATE, STATE_PENDING) ?: STATE_PENDING
+    }
+
+    private fun markDeferredDone(reason: String) {
+        log("Deferred check done: $reason")
+        preferences.edit().putString(KEY_DEFERRED_STATE, STATE_DONE).apply()
+    }
+
+    private fun markDeferredTransientFailure(reason: String) {
+        val attempts = preferences.getInt(KEY_DEFERRED_ATTEMPTS, 0) + 1
+        log("Deferred check transient failure ($reason); attempt $attempts of $MAX_DEFERRED_ATTEMPTS")
+        preferences.edit().putInt(KEY_DEFERRED_ATTEMPTS, attempts).apply()
+        if (attempts >= MAX_DEFERRED_ATTEMPTS) markDeferredDone("max attempts reached")
+    }
+
+    private fun runDeferredCheck() {
+        synchronized(this) {
+            if (deferredState() != STATE_PENDING) return
+            val now = System.currentTimeMillis()
+            var firstLaunchAt = preferences.getLong(KEY_FIRST_LAUNCH_AT, 0L)
+            if (firstLaunchAt == 0L) {
+                firstLaunchAt = now
+                preferences.edit().putLong(KEY_FIRST_LAUNCH_AT, now).apply()
+            }
+            val attempts = preferences.getInt(KEY_DEFERRED_ATTEMPTS, 0)
+            if (attempts >= MAX_DEFERRED_ATTEMPTS || now - firstLaunchAt >= DEFERRED_WINDOW_MS) {
+                markDeferredDone("attempts=$attempts, elapsed=${now - firstLaunchAt}ms")
+                return
+            }
+            if (referrerClient != null) return // a check is already running
+            referrerReconnectAttempted = false
+            startReferrerConnection()
+        }
+    }
+
+    private fun startReferrerConnection() {
+        try {
+            val client = InstallReferrerClient.newBuilder(applicationContext).build()
+            referrerClient = client
+            client.startConnection(object : InstallReferrerStateListener {
+                override fun onInstallReferrerSetupFinished(responseCode: Int) {
+                    when (responseCode) {
+                        InstallReferrerResponse.OK -> {
+                            val referrer = try {
+                                client.installReferrer?.installReferrer
+                            } catch (e: Exception) {
+                                logError("Failed to read install referrer", e)
+                                finishReferrer(client)
+                                markDeferredTransientFailure("read error")
+                                return
+                            }
+                            finishReferrer(client)
+                            handleReferrer(referrer)
+                        }
+                        InstallReferrerResponse.FEATURE_NOT_SUPPORTED,
+                        InstallReferrerResponse.PERMISSION_ERROR -> {
+                            finishReferrer(client)
+                            markDeferredDone("install referrer unavailable (code $responseCode)")
+                        }
+                        else -> {
+                            // SERVICE_UNAVAILABLE, SERVICE_DISCONNECTED, DEVELOPER_ERROR, unknown
+                            finishReferrer(client)
+                            markDeferredTransientFailure("install referrer response $responseCode")
                         }
                     }
                 }
 
-                if (!linkLabId.isNullOrEmpty() && !domain.isNullOrEmpty()) {
-                    retrieveLinkDetailsForReferrer(linkLabId, domain!!)
+                override fun onInstallReferrerServiceDisconnected() {
+                    if (!referrerReconnectAttempted) {
+                        referrerReconnectAttempted = true
+                        log("Install referrer service disconnected; reconnecting once")
+                        try {
+                            client.startConnection(this)
+                            return
+                        } catch (e: Exception) {
+                            logError("Install referrer reconnect failed", e)
+                        }
+                    }
+                    finishReferrer(client)
+                    markDeferredTransientFailure("service disconnected")
                 }
-            }
+            })
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing referrer details", e)
+            logError("Failed to start install referrer client", e)
+            referrerClient = null
+            markDeferredTransientFailure("start error")
         }
     }
+
+    private fun finishReferrer(client: InstallReferrerClient) {
+        try {
+            client.endConnection()
+        } catch (_: Exception) {
+        }
+        if (referrerClient === client) referrerClient = null
+    }
+
+    private fun handleReferrer(referrer: String?) {
+        val parsed = parseReferrer(referrer)
+        if (parsed == null) {
+            markDeferredDone("no linklab_id in install referrer")
+            return
+        }
+        log("Install referrer contains Linklab id ${parsed.linkId}; resolving")
+        fetchLink(
+            parsed.linkId,
+            parsed.domain,
+            shortLink = null,
+            isDeferred = true,
+            matchType = LinkData.MATCH_INSTALL_REFERRER,
+        ) { outcome ->
+            when (outcome) {
+                is FetchOutcome.Resolved -> {
+                    markDeferredDone("deferred link resolved")
+                    deliver(outcome.data)
+                }
+                FetchOutcome.NotFound -> markDeferredDone("deferred link not found")
+                is FetchOutcome.Failed ->
+                    if (outcome.transient) markDeferredTransientFailure(outcome.message)
+                    else markDeferredDone("deferred link failed permanently: ${outcome.message}")
+            }
+        }
+    }
+
+    internal class ReferrerInfo(val linkId: String, val domain: String)
+
+    /**
+     * Extracts `linklab_id` / `domain` from a Play install-referrer string. Accepts the plain
+     * `linklab_id=<id>&domain=<host>` form (URL-encoded values) and the base64-encoded form.
+     * Returns null when no Linklab id is present (e.g. organic installs).
+     */
+    internal fun parseReferrer(referrer: String?): ReferrerInfo? {
+        val raw = referrer?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        parseReferrerQuery(raw)?.let { return it }
+        val decoded = try {
+            String(Base64.decode(raw, Base64.DEFAULT), Charsets.UTF_8)
+        } catch (_: IllegalArgumentException) {
+            return null
+        }
+        return parseReferrerQuery(decoded)
+    }
+
+    private fun parseReferrerQuery(query: String): ReferrerInfo? {
+        if (query.none { it == '=' }) return null
+        return try {
+            val uri = Uri.parse("?$query")
+            val id = uri.getQueryParameter("linklab_id")?.takeIf { it.isNotBlank() } ?: return null
+            val domain = uri.getQueryParameter("domain")?.takeIf { it.isNotBlank() } ?: LINKLAB_HOST
+            ReferrerInfo(id, domain.lowercase(Locale.ROOT))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Logging (rule 6)
+    // ------------------------------------------------------------------------------------------
+
+    private fun log(message: String) {
+        if (config.debugLoggingEnabled) Log.d(TAG, message)
+    }
+
+    private fun logError(message: String, t: Throwable? = null) {
+        if (config.debugLoggingEnabled) Log.e(TAG, message, t)
+    }
+
+    /** URL without its query string / fragment, safe for logs. */
+    private fun redacted(uri: Uri): String =
+        if (uri.isHierarchical) uri.buildUpon().clearQuery().fragment(null).build().toString()
+        else "${uri.scheme}:<opaque>"
 
     companion object {
         private const val TAG = "LinkLab"
-        private const val API_HOST = "https://linklab.cc"
-        private const val REDIRECT_HOST = "linklab.cc"
+        private const val LINKLAB_HOST = "linklab.cc"
         private const val PREFS_NAME = "linklab_prefs"
-        private const val KEY_CHECKED_INSTALL_REFERRER = "checked_install_referrer"
+        private const val KEY_LEGACY_CHECKED_REFERRER = "checked_install_referrer"
+        private const val KEY_DEFERRED_STATE = "deferred_state"
+        private const val KEY_DEFERRED_ATTEMPTS = "deferred_attempts"
+        private const val KEY_FIRST_LAUNCH_AT = "first_launch_at"
+        private const val STATE_PENDING = "pending"
+        private const val STATE_DONE = "done"
+        private const val MAX_DEFERRED_ATTEMPTS = 3
+        private const val DEFERRED_WINDOW_MS = 24L * 60 * 60 * 1000
+        private const val RETRY_BASE_DELAY_MS = 500L
+
+        /** SDK version string, e.g. `"0.1.0"`. */
+        @JvmField
+        val VERSION: String = BuildConfig.SDK_VERSION
 
         @Volatile
         private var instance: LinkLab? = null
 
+        @JvmStatic
         fun getInstance(context: Context): LinkLab {
             return instance ?: synchronized(this) {
                 instance ?: LinkLab(context.applicationContext).also { instance = it }
+            }
+        }
+
+        /** Drops the singleton so each unit test starts from a clean state. Not for production use. */
+        internal fun resetInstanceForTesting() {
+            synchronized(this) { instance = null }
+        }
+
+        private val ISO_8601 = Regex(
+            """^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:?\d{2})?$""",
+            RegexOption.IGNORE_CASE,
+        )
+
+        /**
+         * Parses an ISO-8601 timestamp (`2024-01-15T10:30:00Z`, `2024-01-15T10:30:00.123Z`,
+         * `2024-01-15T10:30:00+02:00`) into epoch millis. Thread-safe; returns null on bad input.
+         * Timestamps without a zone designator are treated as UTC.
+         */
+        @JvmStatic
+        fun parseIso8601(value: String?): Long? {
+            val m = ISO_8601.matchEntire(value?.trim() ?: return null) ?: return null
+            val g = m.groupValues
+            return try {
+                val cal = GregorianCalendar(TimeZone.getTimeZone("UTC"))
+                cal.clear()
+                cal.set(g[1].toInt(), g[2].toInt() - 1, g[3].toInt(), g[4].toInt(), g[5].toInt(), g[6].toInt())
+                var millis = cal.timeInMillis
+                if (g[7].isNotEmpty()) millis += g[7].padEnd(3, '0').substring(0, 3).toLong()
+                val zone = g[8]
+                if (zone.isNotEmpty() && !zone.equals("Z", ignoreCase = true)) {
+                    val sign = if (zone[0] == '-') -1 else 1
+                    val digits = zone.substring(1).replace(":", "")
+                    val offsetMs = (digits.substring(0, 2).toLong() * 60 + digits.substring(2, 4).toLong()) * 60_000
+                    millis -= sign * offsetMs
+                }
+                millis
+            } catch (_: Exception) {
+                null
             }
         }
     }

@@ -2,23 +2,27 @@ import java.io.ByteArrayOutputStream
 
 // build.gradle.kts for the library module
 plugins {
-    id("com.android.library")
-    id("kotlin-android")
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.android)
     id("maven-publish")
     id("signing")
-    alias(libs.plugins.compose.compiler)
 }
+
+val sdkVersion: String = project.findProperty("version")?.toString() ?: "0.0.0"
 
 android {
     namespace = "cc.linklab.android"
     compileSdk = 36
 
     defaultConfig {
-        minSdk = 27
-        targetSdk = 36
+        minSdk = 21
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+        buildConfigField("String", "SDK_VERSION", "\"$sdkVersion\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {
@@ -38,6 +42,13 @@ android {
 
     kotlinOptions {
         jvmTarget = "1.8"
+        freeCompilerArgs += "-Xjvm-default=all"
+    }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
     }
 
     publishing {
@@ -50,18 +61,13 @@ android {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
     implementation(libs.okhttp)
-    implementation(libs.kotlin.stdlib)
     implementation(libs.installreferrer)
 
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.compose.runtime)
-    implementation(libs.androidx.compose.ui)
-
     testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.test.ext.junit)
-    androidTestImplementation(libs.androidx.test.espresso.core)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.okhttp.mockwebserver)
 }
 
 // For publishing the library
@@ -73,12 +79,12 @@ afterEvaluate {
 
                 groupId = project.findProperty("group")?.toString() ?: "cc.linklab"
                 artifactId = "android"
-                version = project.findProperty("version")?.toString() ?: "0.0.1-SNAPSHOT"
+                version = project.findProperty("version")?.toString() ?: "0.0.0"
                 
                 pom {
                     name.set("LinkLab Android SDK")
                     description.set(project.findProperty("projectDescription")?.toString() ?: "Android SDK for LinkLab integration")
-                    url.set(project.findProperty("projectUrl")?.toString() ?: "https://github.com/linklab/linklab-android-sdk")
+                    url.set(project.findProperty("projectUrl")?.toString() ?: "https://github.com/Linklab-cc/linklab-android-sdk")
                     
                     licenses {
                         license {
@@ -98,16 +104,19 @@ afterEvaluate {
                     scm {
 //                        connection.set(project.findProperty("projectScmConnection")?.toString() ?: "scm:git:git://github.com/linklab/linklab-android-sdk.git")
 //                        developerConnection.set(project.findProperty("projectScmDeveloperConnection")?.toString() ?: "scm:git:ssh://github.com/linklab/linklab-android-sdk.git")
-                        url.set(project.findProperty("projectScmUrl")?.toString() ?: "https://github.com/linklab/linklab-android-sdk")
+                        url.set(project.findProperty("projectScmUrl")?.toString() ?: "https://github.com/Linklab-cc/linklab-android-sdk")
                     }
                 }
             }
         }
     }
 
-    // Set up signing
+    // Sign only when signing credentials are supplied (-Psigning.keyId=... etc.)
     signing {
-        sign(publishing.publications["release"])
+        isRequired = !project.findProperty("signing.keyId")?.toString().isNullOrBlank()
+        if (isRequired) {
+            sign(publishing.publications["release"])
+        }
     }
 }
 
@@ -170,19 +179,19 @@ tasks.register("publishToCentralPortal") {
     dependsOn("createDeploymentBundle")
     
     doLast {
-        val username = project.findProperty("ossrhUsername")?.toString() 
-            ?: System.getenv("OSSRH_USERNAME") 
-            ?: error("ossrhUsername not found in gradle.properties or OSSRH_USERNAME env var")
-        val password = project.findProperty("ossrhPassword")?.toString() 
-            ?: System.getenv("OSSRH_PASSWORD") 
-            ?: error("ossrhPassword not found in gradle.properties or OSSRH_PASSWORD env var")
+        val username = project.findProperty("ossrhUsername")?.toString()?.takeIf { it.isNotBlank() }
+            ?: System.getenv("OSSRH_USERNAME")?.takeIf { it.isNotBlank() }
+            ?: error("ossrhUsername not provided (-PossrhUsername=... or OSSRH_USERNAME env var)")
+        val password = project.findProperty("ossrhPassword")?.toString()?.takeIf { it.isNotBlank() }
+            ?: System.getenv("OSSRH_PASSWORD")?.takeIf { it.isNotBlank() }
+            ?: error("ossrhPassword not provided (-PossrhPassword=... or OSSRH_PASSWORD env var)")
         
         val bundleFile = file("${project.layout.buildDirectory.get()}/deployment-bundle.zip")
         if (!bundleFile.exists()) {
             error("Bundle file not found: ${bundleFile.absolutePath}")
         }
         
-        println("📦 Uploading bundle to Central Portal...")
+        println("Uploading bundle to Central Portal...")
         
         // Upload the bundle using curl with Basic auth and capture HTTP code
         val stdout = ByteArrayOutputStream()
@@ -207,15 +216,15 @@ tasks.register("publishToCentralPortal") {
         val httpCode = lines.lastOrNull()?.toIntOrNull() ?: -1
         val body = lines.dropLast(1).joinToString("\n")
         if (httpCode in listOf(200, 201, 202)) {
-            logger.lifecycle("✅ Successfully uploaded to Central Portal! ($httpCode)")
+            logger.lifecycle("Successfully uploaded to Central Portal! ($httpCode)")
             if (body.isNotBlank()) {
                 logger.lifecycle(body)
             }
-            logger.lifecycle("🔍 Check status at: https://central.sonatype.com/publishing")
-            logger.lifecycle("⏱  Artifacts will sync to Maven Central in 15-30 minutes")
+            logger.lifecycle("Check status at: https://central.sonatype.com/publishing")
+            logger.lifecycle("Artifacts will sync to Maven Central in 15-30 minutes")
         } else {
             val errOut = stderr.toString()
-            error("❌ Upload failed (HTTP $httpCode).\nResponse: $body\n$errOut")
+            error("Upload failed (HTTP $httpCode).\nResponse: $body\n$errOut")
         }
     }
 }

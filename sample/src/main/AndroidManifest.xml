@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
+
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
@@ -9,17 +9,33 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.LinklabAndroidSdk">
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.LinklabAndroidSdk">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+                Android App Links for Linklab.
+                android:autoVerify="true" makes Android verify
+                https://<host>/.well-known/assetlinks.json at install time so these links open
+                the app directly instead of the browser/disambiguation dialog.
+                List every Linklab host you use: linklab.cc and any custom domains
+                you configure in LinkLabConfig.customDomains.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="linklab.cc" />
+                <data android:host="demo.linklab.cc" />
             </intent-filter>
         </activity>
     </application>

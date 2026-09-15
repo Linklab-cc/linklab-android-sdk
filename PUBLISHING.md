@@ -1,157 +1,88 @@
-# Publishing the LinkLab Android SDK
+# Publishing the Linklab Android SDK
 
-This document explains how to publish the LinkLab Android SDK to Maven Central.
+Artifacts are published to Maven Central as `cc.linklab:android` through the
+[Sonatype Central Portal](https://central.sonatype.com/).
 
 ## Prerequisites
 
-1. A Sonatype account (either Legacy OSSRH or New Central Portal)
-2. GPG key for signing artifacts
-3. **GPG public key uploaded to keyservers** (see below)
+1. A Central Portal account with publishing rights for the `cc.linklab` namespace and a
+   generated **user token** (Account -> Generate User Token). The token username/password are
+   what `ossrhUsername` / `ossrhPassword` refer to below.
+2. A GPG key whose **public key is on a public keyserver**. Upload it once:
 
-## Sonatype Systems
+   ```bash
+   gpg --keyserver keys.openpgp.org --send-keys YOUR_KEY_ID
+   gpg --keyserver keyserver.ubuntu.com --send-keys YOUR_KEY_ID
+   ```
 
-Sonatype has two publishing systems:
+   Wait a few minutes for propagation before the first publish. Export the secret keyring if you
+   do not have one yet: `gpg --export-secret-keys YOUR_KEY_ID > ~/.gnupg/secring.gpg`.
 
-### New Central Portal (Recommended)
-- Website: https://central.sonatype.com/
-- Uses publishing tokens (not username/password)
-- Simpler bundle-based upload process
-- **Use this if your account was created after March 2024**
+## Credentials are never stored in the repository
 
-### Legacy OSSRH
-- Website: https://s01.oss.sonatype.org/
-- Uses JIRA credentials
-- Uses staging repositories
-- **Use this if you have an older Sonatype account**
+`gradle.properties` in this repo deliberately keeps `ossrhUsername`, `ossrhPassword` and the
+`signing.*` properties **empty**. Supply them at publish time either
 
-## Configuration
+- on the command line with `-P` flags (shown below), or
+- in your private `~/.gradle/gradle.properties`, or
+- via the environment variables `OSSRH_USERNAME` and `OSSRH_PASSWORD` (credentials only).
 
-### Step 1: Upload GPG Public Key (First Time Only)
+Signing is skipped automatically when `signing.keyId` is empty, so everyday builds and CI do not
+need a key.
 
-**Important:** Maven Central requires your GPG public key to be available on public keyservers.
+## Release steps
 
-Run this once (already done if you just followed the setup):
+1. Set the version in `gradle.properties` (`version=0.1.0`) and update `CHANGELOG.md`.
+2. Make sure the build is green:
 
-```bash
-./upload-gpg-key.sh
-```
+   ```bash
+   ./gradlew :linklab:assembleRelease :linklab:testReleaseUnitTest --no-daemon
+   ```
 
-Or manually:
-```bash
-gpg --keyserver keys.openpgp.org --send-keys YOUR_KEY_ID
-gpg --keyserver keyserver.ubuntu.com --send-keys YOUR_KEY_ID
-```
+3. Build, sign, bundle and upload to the Central Portal:
 
-**Wait 5-10 minutes** for key propagation before publishing.
+   ```bash
+   ./gradlew publishToCentralPortal \
+     -PossrhUsername=<token-username> \
+     -PossrhPassword=<token-password> \
+     -Psigning.keyId=<last 8 hex chars of the key id> \
+     -Psigning.password=<key passphrase> \
+     -Psigning.secretKeyRingFile=/absolute/path/to/secring.gpg
+   ```
 
-### Step 2: Verify Credentials
+   `publishToCentralPortal` is defined in `linklab/build.gradle.kts`; it publishes the release
+   publication (AAR, sources, javadoc, POM, signatures) to `linklab/build/maven-bundle`, zips it
+   to `linklab/build/deployment-bundle.zip` and uploads the zip with the Central Portal publisher
+   API. `./gradlew publishRelease` (root project) does the same after a `clean` and refuses
+   `-SNAPSHOT` versions.
 
-The credentials are already in `gradle.properties`. Make sure they are correct:
+4. Check https://central.sonatype.com/publishing. The deployment validates within a couple of
+   minutes and appears on Maven Central 15-30 minutes after it is published.
+5. Tag the release: `git tag v0.1.0 && git push origin v0.1.0`.
 
-```properties
-# For New Portal: Get from https://central.sonatype.com/ -> Account -> Generate User Token
-# For Legacy OSSRH: Use your Sonatype JIRA credentials
-ossrhUsername=your_username_or_token
-ossrhPassword=your_password_or_token
-
-# Signing Configuration
-signing.keyId=your_gpg_key_id_last_8_chars
-signing.password=your_gpg_key_password
-signing.secretKeyRingFile=../secring.gpg
-```
-
-## Publishing Process
-
-### Step 1: Update Version
-
-Update the version in `gradle.properties`:
-
-```properties
-version=0.0.1-SNAPSHOT  # for a snapshot release
-# or
-version=0.0.1  # for a release version (remove -SNAPSHOT)
-```
-
-### Step 2: Build the Project
+## Manual upload (fallback)
 
 ```bash
-./gradlew clean build
+./gradlew :linklab:createDeploymentBundle -Psigning.keyId=... -Psigning.password=... -Psigning.secretKeyRingFile=...
 ```
 
-### Step 3: Publish
+Then upload `linklab/build/deployment-bundle.zip` by hand at
+https://central.sonatype.com/publishing -> Publish Component.
 
-#### Option A: New Central Portal (Recommended - Automated)
+## Legacy OSSRH
 
-Simply run:
+The root build still applies the Nexus publish plugin and defines `publishToMavenCentral`
+(snapshots) and `publishAndRelease` (releases) for accounts that remain on the legacy
+`s01.oss.sonatype.org` staging flow. They read the same `ossrhUsername` / `ossrhPassword`
+properties. New publishers should use the Central Portal flow above.
 
-```bash
-./gradlew publishRelease
-```
+## Troubleshooting
 
-This will automatically:
-1. ✅ Clean and build the project
-2. ✅ Sign all artifacts with GPG
-3. ✅ Create a deployment bundle
-4. ✅ Upload to Central Portal API
-5. ✅ Display upload status
-
-After successful upload:
-- Check status at: https://central.sonatype.com/publishing
-- You may need to review and publish in the portal (usually auto-publishes)
-- ⏱ **Sync time:** 15-30 minutes to appear on Maven Central
-
-#### Option B: Legacy OSSRH (If you have old account)
-
-For snapshots:
-```bash
-./gradlew publishToMavenCentral
-```
-
-For releases:
-```bash
-./gradlew publishAndRelease
-```
-
-Or run the steps separately:
-
-```bash
-# Step 1: Publish to Sonatype
-./gradlew :linklab:publishLinkLabToSonatype
-
-# Step 2: Close and release the staging repository
-./gradlew :linklab:releaseSonatypeRepository
-```
-
-## Common Issues and Solutions
-
-### 1. Invalid Signature / Public Key Not Found
-
-**Error:** "Could not find a public key by the key fingerprint"
-
-**Solution:** Your GPG public key needs to be uploaded to keyservers:
-```bash
-./upload-gpg-key.sh
-```
-
-Wait 5-10 minutes for propagation, then try publishing again.
-
-### 2. Signing Failed
-
-If signing fails, verify your GPG configuration:
-- Check that your key is valid and not expired
-- Ensure the key ID and password are correct
-- Confirm the secret keyring file path is correct
-
-### 3. Sonatype Repository Issues
-
-If the Sonatype repository operation fails:
-- Verify your credentials
-- Check if you have the proper permissions
-- Ensure your artifacts meet Maven Central requirements
-
-### 4. Artifact Validation
-
-Before publishing, verify your artifacts contain the proper information:
-- Check the POM file contains all required information
-- Verify Javadoc and source jars are included
-- Ensure all artifacts are properly signed
+- **"Could not find a public key by the key fingerprint"** - the GPG public key is not (yet) on a
+  keyserver. Upload it (see Prerequisites) and retry after a few minutes.
+- **Signing fails** - check the key id (last 8 hex characters), passphrase and that
+  `signing.secretKeyRingFile` is an absolute path to an exported secret keyring.
+- **`ossrhUsername not provided`** - the property is empty; pass it with `-P` or in
+  `~/.gradle/gradle.properties`.
+- **Validation errors in the portal** - the POM must include name, description, url, license,
+  developers and scm; all of these come from `gradle.properties` (`project*` keys).
